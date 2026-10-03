@@ -1,17 +1,21 @@
-import { createBot } from "./app/bot/bot.js";
-import { env } from "./app/config/env.js";
-import { logger } from "./app/shared/logger/logger.js";
+import "dotenv/config";
+import { createApplication } from "./composition-root.js";
+import { loadConfig } from "./config/config.js";
+import { runApplication } from "./lifecycle.js";
+import { logger } from "./shared/logger.js";
 
-async function bootstrap() {
-  const bot = await createBot();
-  await bot.launch();
-  logger.info(`Bot launched in ${env.NODE_ENV} mode`);
+try {
+  const config = loadConfig();
+  const app = createApplication(config);
+
+  try {
+    await runApplication(app);
+    logger.info({ env: config.nodeEnv }, "Application started");
+  } catch (error) {
+    app.close();
+    throw error;
+  }
+} catch (err) {
+  logger.fatal({ err }, "Failed to start application");
+  process.exitCode = 1;
 }
-
-bootstrap().catch((error) => {
-  logger.error("Failed to start application", error);
-  process.exit(1);
-});
-
-process.once("SIGINT", () => process.exit(0));
-process.once("SIGTERM", () => process.exit(0));

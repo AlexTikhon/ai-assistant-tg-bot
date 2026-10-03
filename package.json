@@ -2,28 +2,37 @@
   "name": "telegrambot",
   "version": "1.0.0",
   "description": "AI knowledge assistant Telegram bot with document ingestion and RAG",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "Alex Tikhon",
   "license": "ISC",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "@langchain/community": "^1.1.23",
     "@langchain/core": "^1.1.32",
     "@langchain/openai": "^1.2.0",
-    "@types/node": "^25.4.0",
     "better-sqlite3": "^12.6.2",
-    "chromadb": "^3.3.3",
     "dotenv": "^17.2.3",
-    "langchain": "^1.2.3",
     "pdf-parse": "^2.4.5",
+    "pino": "^10.4.0",
     "telegraf": "^4.16.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^25.4.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
   }
 }
