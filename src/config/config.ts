@@ -28,6 +28,12 @@ const envSchema = z
     RETRIEVAL_LEXICAL_LIMIT: positiveInt(20),
     RETRIEVAL_CONTEXT_MAX_CHARS: positiveInt(6000),
 
+    MAX_DOCUMENTS_PER_USER: positiveInt(100),
+    MAX_STORAGE_BYTES_PER_USER: positiveInt(200 * 1024 * 1024),
+    MAX_CHUNKS_PER_DOCUMENT: positiveInt(2000),
+
+    RATE_LIMIT_REQUESTS: positiveInt(10),
+    RATE_LIMIT_WINDOW_MS: positiveInt(60_000),
 
     REQUEST_TIMEOUT_MS: positiveInt(60_000),
     HANDLER_TIMEOUT_MS: positiveInt(300_000),
@@ -86,6 +92,15 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       semanticLimit: env.RETRIEVAL_SEMANTIC_LIMIT,
       lexicalLimit: env.RETRIEVAL_LEXICAL_LIMIT,
       contextMaxChars: env.RETRIEVAL_CONTEXT_MAX_CHARS,
+    },
+    limits: {
+      maxDocumentsPerUser: env.MAX_DOCUMENTS_PER_USER,
+      maxStorageBytesPerUser: env.MAX_STORAGE_BYTES_PER_USER,
+      maxChunksPerDocument: env.MAX_CHUNKS_PER_DOCUMENT,
+    },
+    rateLimit: {
+      requests: env.RATE_LIMIT_REQUESTS,
+      windowMs: env.RATE_LIMIT_WINDOW_MS,
     },
     logQuestions: env.LOG_QUESTIONS,
     ragDebug: env.RAG_DEBUG,

@@ -39,3 +39,13 @@ export class ExternalServiceError extends AppError {
     super(message, "EXTERNAL_SERVICE_ERROR", options);
   }
 }
+
+/** The user sent too many expensive requests in a short time; they can simply try again later. */
+export class RateLimitError extends AppError {
+  constructor(public readonly retryAfterMs: number) {
+    super(
+      `You are sending requests too quickly. Please try again in ${Math.max(1, Math.ceil(retryAfterMs / 1000))} seconds.`,
+      "RATE_LIMITED",
+    );
+  }
+}

@@ -8,10 +8,23 @@ let stores: ReturnType<typeof createTestStores>;
 let files: InMemoryFileStorage;
 let embeddings: KeywordEmbeddings;
 
-const options = { maxUploadBytes: 1024, chunkSize: 200, chunkOverlap: 20 };
+const options = {
+  maxUploadBytes: 1024,
+  chunkSize: 200,
+  chunkOverlap: 20,
+  maxDocumentsPerUser: 10,
+  maxStorageBytesPerUser: 1_000_000,
+  maxChunksPerDocument: 100,
+};
 
-function createUseCase(documents: DocumentRepository = stores.documents) {
-  return new IngestDocumentUseCase({ documents, files, extractor: new Utf8Extractor(), embeddings, options });
+function createUseCase(documents: DocumentRepository = stores.documents, overrides: Partial<typeof options> = {}) {
+  return new IngestDocumentUseCase({
+    documents,
+    files,
+    extractor: new Utf8Extractor(),
+    embeddings,
+    options: { ...options, ...overrides },
+  });
 }
 
 const upload = (overrides: Partial<{ userId: string; fileName: string; text: string }> = {}) => ({
@@ -104,6 +117,7 @@ describe("IngestDocumentUseCase", () => {
 
   it("removes the stored file when persisting fails (compensation)", async () => {
     const failingRepository = {
+      getUsage: async () => ({ documentCount: 0, totalBytes: 0 }),
       saveWithChunks: async () => {
         throw new Error("database is locked");
       },
@@ -118,6 +132,7 @@ describe("IngestDocumentUseCase", () => {
   it("still reports the original persistence error if file cleanup also fails", async () => {
     files.failOnDelete = true;
     const failingRepository = {
+      getUsage: async () => ({ documentCount: 0, totalBytes: 0 }),
       saveWithChunks: async () => {
         throw new Error("database is locked");
       },
@@ -141,5 +156,84 @@ describe("IngestDocumentUseCase", () => {
 
     expect(await stores.documents.listByUser("user-1")).toHaveLength(1);
     expect(await stores.documents.listByUser("user-2")).toHaveLength(1);
+  });
+});
+
+describe("IngestDocumentUseCase per-user limits", () => {
+  it("rejects an upload beyond the document limit, before extracting or embedding anything", async () => {
+    const useCase = createUseCase(stores.documents, { maxDocumentsPerUser: 2 });
+    await useCase.execute(upload({ fileName: "one.txt" }));
+    await useCase.execute(upload({ fileName: "two.txt" }));
+    embeddings.documentCalls.length = 0;
+
+    await expect(useCase.execute(upload({ fileName: "three.txt" }))).rejects.toThrow(/at most 2 documents/);
+
+    expect(embeddings.documentCalls).toHaveLength(0);
+    expect(files.files.size).toBe(2);
+    expect(rowCount("documents")).toBe(2);
+  });
+
+  it("counts documents per user: another user's uploads do not use up my quota", async () => {
+    const useCase = createUseCase(stores.documents, { maxDocumentsPerUser: 1 });
+    await useCase.execute(upload({ userId: "user-1" }));
+
+    await expect(useCase.execute(upload({ userId: "user-2" }))).resolves.toMatchObject({ chunksCount: expect.any(Number) });
+    await expect(useCase.execute(upload({ userId: "user-1" }))).rejects.toThrow(ValidationError);
+  });
+
+  it("rejects an upload that would push the user's stored bytes over the storage limit", async () => {
+    const text = "x".repeat(300);
+    const useCase = createUseCase(stores.documents, { maxStorageBytesPerUser: 700 });
+    await useCase.execute(upload({ text }));
+    await useCase.execute(upload({ text }));
+    embeddings.documentCalls.length = 0;
+
+    await expect(useCase.execute(upload({ text }))).rejects.toThrow(/storage limit/);
+
+    expect(embeddings.documentCalls).toHaveLength(0);
+    expect(rowCount("documents")).toBe(2);
+  });
+
+  it("deleting a document frees its quota", async () => {
+    const useCase = createUseCase(stores.documents, { maxDocumentsPerUser: 1 });
+    const { documentId } = await useCase.execute(upload());
+    await stores.documents.delete("user-1", documentId);
+
+    await expect(useCase.execute(upload())).resolves.toBeDefined();
+  });
+
+  it("rejects a document that splits into too many chunks before paying for embeddings", async () => {
+    const useCase = createUseCase(stores.documents, { maxChunksPerDocument: 2 });
+
+    await expect(useCase.execute(upload({ text: "word ".repeat(150) }))).rejects.toThrow(/too large to index|chunks/);
+
+    expect(embeddings.documentCalls).toHaveLength(0);
+    expect(files.files.size).toBe(0);
+    expect(rowCount("documents")).toBe(0);
+  });
+
+  it("serializes simultaneous uploads of one user so the limit cannot be raced", async () => {
+    const useCase = createUseCase(stores.documents, { maxDocumentsPerUser: 1 });
+
+    const results = await Promise.allSettled([
+      useCase.execute(upload({ fileName: "a.txt" })),
+      useCase.execute(upload({ fileName: "b.txt" })),
+      useCase.execute(upload({ fileName: "c.txt" })),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(2);
+    expect(rowCount("documents")).toBe(1);
+  });
+
+  it("does not make different users wait for each other", async () => {
+    const useCase = createUseCase(stores.documents, { maxDocumentsPerUser: 1 });
+
+    const results = await Promise.allSettled([
+      useCase.execute(upload({ userId: "user-1" })),
+      useCase.execute(upload({ userId: "user-2" })),
+    ]);
+
+    expect(results.every((result) => result.status === "fulfilled")).toBe(true);
   });
 });

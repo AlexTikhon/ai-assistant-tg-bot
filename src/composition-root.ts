@@ -20,6 +20,7 @@ import { SqliteIndexMaintenance } from "./infrastructure/sqlite/sqlite-index-mai
 import { SqliteVectorStore } from "./infrastructure/sqlite/sqlite-vector-store.js";
 import { LocalFileStorage } from "./infrastructure/storage/local-file-storage.js";
 import { logger } from "./shared/logger.js";
+import { RateLimiter } from "./shared/rate-limiter.js";
 import { createBot } from "./telegram/bot.js";
 
 export type Application = {
@@ -85,7 +86,7 @@ export function createApplication(config: AppConfig): Application {
       files,
       extractor,
       embeddings,
-      options: config.ingestion,
+      options: { ...config.ingestion, ...config.limits },
     });
     const answerQuestion = new AnswerQuestionUseCase({
       retriever: new HybridRetriever({ embeddings, vectorStore, options: config.retrieval }),
@@ -93,7 +94,12 @@ export function createApplication(config: AppConfig): Application {
       options: { logQuestions: config.logQuestions, ragDebug: config.ragDebug },
     });
     const listDocuments = new ListDocumentsUseCase({ documents });
-    const summarizeDocument = new SummarizeDocumentUseCase({ documents, vectorStore, chatModel });
+    const summarizeDocument = new SummarizeDocumentUseCase({
+      documents,
+      vectorStore,
+      chatModel,
+      options: { chunkOverlap: config.ingestion.chunkOverlap },
+    });
     const deleteDocument = new DeleteDocumentUseCase({ documents, vectorStore, files });
 
     // Delivery
@@ -105,6 +111,7 @@ export function createApplication(config: AppConfig): Application {
       deleteDocument,
       speechToText,
       downloadLimits: { maxBytes: config.ingestion.maxUploadBytes, timeoutMs: config.ingestion.downloadTimeoutMs },
+      rateLimiter: new RateLimiter({ limit: config.rateLimit.requests, windowMs: config.rateLimit.windowMs }),
     });
 
     return {

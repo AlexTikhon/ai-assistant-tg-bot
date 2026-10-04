@@ -3,6 +3,7 @@ import { isSupportedFileName } from "../../core/document.js";
 import type { ChunkRecord, DocumentRecord } from "../../core/document.js";
 import { splitText } from "../../core/text-splitter.js";
 import { ValidationError } from "../../shared/errors.js";
+import { KeyedMutex } from "../../shared/keyed-mutex.js";
 import { logger } from "../../shared/logger.js";
 import { normalizeText } from "../../shared/utils/text.js";
 import { ensureEmbeddingBatch } from "../validate-embeddings.js";
@@ -30,7 +31,14 @@ type Dependencies = {
   files: FileStorage;
   extractor: DocumentTextExtractor;
   embeddings: EmbeddingsProvider;
-  options: { maxUploadBytes: number; chunkSize: number; chunkOverlap: number };
+  options: {
+    maxUploadBytes: number;
+    chunkSize: number;
+    chunkOverlap: number;
+    maxDocumentsPerUser: number;
+    maxStorageBytesPerUser: number;
+    maxChunksPerDocument: number;
+  };
 };
 
 const log = logger.child({ operation: "ingestDocument" });
@@ -41,11 +49,21 @@ const log = logger.child({ operation: "ingestDocument" });
  * All fallible work that has no side effects (validation, extraction, splitting, embedding) happens
  * first. Only then is the file written, and the metadata + chunks are saved in one transaction. If
  * that fails the file is removed again, so a failed ingestion leaves nothing behind.
+ *
+ * Per-user limits (documents, stored bytes, chunks per document) are checked before any paid work.
+ * Ingestions of the same user run one at a time, otherwise two simultaneous uploads could both pass
+ * the quota check; different users never wait for each other.
  */
 export class IngestDocumentUseCase {
+  private readonly userLocks = new KeyedMutex();
+
   constructor(private readonly deps: Dependencies) {}
 
-  async execute(input: IngestDocumentInput): Promise<IngestDocumentResult> {
+  execute(input: IngestDocumentInput): Promise<IngestDocumentResult> {
+    return this.userLocks.run(input.userId, () => this.ingest(input));
+  }
+
+  private async ingest(input: IngestDocumentInput): Promise<IngestDocumentResult> {
     const startedAt = Date.now();
     const { documents, files, extractor, embeddings, options } = this.deps;
 
@@ -59,6 +77,8 @@ export class IngestDocumentUseCase {
       throw new ValidationError(`The file is too large. The limit is ${formatMegabytes(options.maxUploadBytes)}.`);
     }
 
+    await this.assertWithinQuota(input.userId, input.data.byteLength);
+
     const text = normalizeText(await extractor.extract(input));
     if (!text) {
       throw new ValidationError("Could not extract text from the uploaded file.");
@@ -67,6 +87,12 @@ export class IngestDocumentUseCase {
     const drafts = splitText(text, { chunkSize: options.chunkSize, chunkOverlap: options.chunkOverlap });
     if (drafts.length === 0) {
       throw new ValidationError("The document does not contain enough text to index.");
+    }
+
+    if (drafts.length > options.maxChunksPerDocument) {
+      throw new ValidationError(
+        `This document is too large to index (it would need ${drafts.length} chunks; the limit is ${options.maxChunksPerDocument}). Try splitting it.`,
+      );
     }
 
     const vectors = await embeddings.embedDocuments(drafts.map((draft) => draft.content));
@@ -119,6 +145,23 @@ export class IngestDocumentUseCase {
     );
 
     return { documentId, fileName: input.fileName, chunksCount: chunks.length, textLength: text.length };
+  }
+
+  private async assertWithinQuota(userId: string, incomingBytes: number) {
+    const { documents, options } = this.deps;
+    const usage = await documents.getUsage(userId);
+
+    if (usage.documentCount >= options.maxDocumentsPerUser) {
+      throw new ValidationError(
+        `You can store at most ${options.maxDocumentsPerUser} documents. Delete one with /delete <documentId> first.`,
+      );
+    }
+    if (usage.totalBytes + incomingBytes > options.maxStorageBytesPerUser) {
+      throw new ValidationError(
+        `This file would exceed your storage limit of ${formatMegabytes(options.maxStorageBytesPerUser)}. ` +
+          "Delete a document with /delete <documentId> to free space.",
+      );
+    }
   }
 }
 

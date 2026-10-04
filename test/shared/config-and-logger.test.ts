@@ -22,6 +22,12 @@ describe("loadConfig", () => {
       lexicalLimit: 20,
       contextMaxChars: 6000,
     });
+    expect(config.limits).toEqual({
+      maxDocumentsPerUser: 100,
+      maxStorageBytesPerUser: 200 * 1024 * 1024,
+      maxChunksPerDocument: 2000,
+    });
+    expect(config.rateLimit).toEqual({ requests: 10, windowMs: 60_000 });
     expect(config.logQuestions).toBe(false);
     expect(config.ragDebug).toBe(false);
   });
@@ -34,16 +40,23 @@ describe("loadConfig", () => {
     expect(config.logQuestions).toBe(true);
   });
 
-  it("reads the retrieval and debug settings", () => {
+  it("reads the retrieval, limit, rate-limit and debug settings", () => {
     const config = loadConfig({
       ...required,
       RETRIEVAL_SEMANTIC_LIMIT: "30",
       RETRIEVAL_LEXICAL_LIMIT: "15",
       RETRIEVAL_CONTEXT_MAX_CHARS: "4000",
+      MAX_DOCUMENTS_PER_USER: "7",
+      MAX_STORAGE_BYTES_PER_USER: "1000000",
+      MAX_CHUNKS_PER_DOCUMENT: "50",
+      RATE_LIMIT_REQUESTS: "3",
+      RATE_LIMIT_WINDOW_MS: "1000",
       RAG_DEBUG: "true",
     });
 
     expect(config.retrieval).toMatchObject({ semanticLimit: 30, lexicalLimit: 15, contextMaxChars: 4000 });
+    expect(config.limits).toEqual({ maxDocumentsPerUser: 7, maxStorageBytesPerUser: 1_000_000, maxChunksPerDocument: 50 });
+    expect(config.rateLimit).toEqual({ requests: 3, windowMs: 1000 });
     expect(config.ragDebug).toBe(true);
   });
 
@@ -51,6 +64,7 @@ describe("loadConfig", () => {
     expect(() => loadConfig({})).toThrow(/TELEGRAM_BOT_TOKEN/);
     expect(() => loadConfig({ ...required, CHUNK_SIZE: "100", CHUNK_OVERLAP: "100" })).toThrow(/CHUNK_OVERLAP/);
     expect(() => loadConfig({ ...required, MAX_UPLOAD_BYTES: "-5" })).toThrow(/MAX_UPLOAD_BYTES/);
+    expect(() => loadConfig({ ...required, RATE_LIMIT_REQUESTS: "0" })).toThrow(/RATE_LIMIT_REQUESTS/);
     expect(() => loadConfig({ ...required, RAG_DEBUG: "yes" })).toThrow(/RAG_DEBUG/);
     expect(() => loadConfig({ ...required, RETRIEVAL_CONTEXT_MAX_CHARS: "abc" })).toThrow(/RETRIEVAL_CONTEXT_MAX_CHARS/);
   });
