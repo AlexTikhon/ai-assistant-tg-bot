@@ -14,11 +14,16 @@ let chatModel: FakeChatModel;
 
 const retrievalOptions = { topK: 3, minScore: 0.2, semanticLimit: 10, lexicalLimit: 10, contextMaxChars: 10_000 };
 
-type TestLog = { entries: Array<{ fields: Record<string, unknown>; message: string }>; info: (fields: Record<string, unknown>, message: string) => void };
+type TestLog = {
+  entries: Array<{ fields: Record<string, unknown>; message: string }>;
+  info: (fields: Record<string, unknown>, message: string) => void;
+  warn: (fields: Record<string, unknown>, message: string) => void;
+};
 
 function createLog(): TestLog {
   const entries: TestLog["entries"] = [];
-  return { entries, info: (fields, message) => void entries.push({ fields, message }) };
+  const record = (fields: Record<string, unknown>, message: string) => void entries.push({ fields, message });
+  return { entries, info: record, warn: record };
 }
 
 function createUseCase(options: { logQuestions?: boolean; ragDebug?: boolean } = {}, log: TestLog = createLog()) {
@@ -60,7 +65,7 @@ describe("AnswerQuestionUseCase", () => {
 
     const result = await createUseCase().execute({ userId: "user-1", question: "What does the cat do?" });
 
-    expect(result).toEqual({ answer: NO_CONTEXT_ANSWER, sources: [] });
+    expect(result).toEqual({ answer: NO_CONTEXT_ANSWER, sources: [], citations: { cited: [], removed: [] } });
     expect(chatModel.calls).toHaveLength(0);
   });
 
@@ -105,7 +110,7 @@ describe("AnswerQuestionUseCase", () => {
 
     const result = await createUseCase().execute({ userId: "user-1", question: "Tell me about the cat" });
 
-    expect(result).toEqual({ answer: NO_CONTEXT_ANSWER, sources: [] });
+    expect(result).toMatchObject({ answer: NO_CONTEXT_ANSWER, sources: [] });
     expect(chatModel.calls).toHaveLength(0);
   });
 

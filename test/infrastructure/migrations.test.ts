@@ -274,7 +274,7 @@ describe("existing vector-only data after the upgrade", () => {
     const db = openDatabase(dbPath, { legacyEmbeddingModel: "ignored" });
     const maintenance = new SqliteIndexMaintenance(db);
 
-    expect(await maintenance.listIndexedDocuments({ model: "model-a" })).toEqual([
+    expect(await maintenance.listIndexedDocuments({ model: "model-a" })).toMatchObject([
       { userId: "u1", documentId: "d1", fileName: "a.txt", chunkCount: 3, staleChunkCount: 1 }, // only the corrupted vector
     ]);
     expect((await maintenance.listIndexedDocuments({ model: "model-b" }))[0].staleChunkCount).toBe(3);

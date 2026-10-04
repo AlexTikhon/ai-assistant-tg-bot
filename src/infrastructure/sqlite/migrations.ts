@@ -203,6 +203,20 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 5,
+    name: "record the index profile per document, page provenance per chunk",
+    up(db) {
+      // Nullable and unfilled on purpose: rows from earlier versions have no recorded recipe, and
+      // inventing one would hide that. Readers describe them from what is actually known.
+      db.exec(`
+        ALTER TABLE documents ADD COLUMN index_profile TEXT;
+        ALTER TABLE documents ADD COLUMN index_fingerprint TEXT;
+        ALTER TABLE document_chunks ADD COLUMN page_start INTEGER;
+        ALTER TABLE document_chunks ADD COLUMN page_end INTEGER;
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1].version;

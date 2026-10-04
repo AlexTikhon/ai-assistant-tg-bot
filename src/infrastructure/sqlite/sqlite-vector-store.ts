@@ -6,10 +6,12 @@ import type {
   VectorStore,
 } from "../../application/ports/vector-store.js";
 import type { ChunkText } from "../../core/document.js";
+import type { StoredIndexProfile } from "../../core/index-profile.js";
 import { buildLexicalQuery } from "../../core/lexical-query.js";
 import type { ChunkMatch, StoredChunk } from "../../core/retrieval.js";
 import { cosineSimilarity, decodeVector, encodeVector, VectorError } from "../../core/vectors.js";
 import { logger } from "../../shared/logger.js";
+import { profileColumns } from "./profile-column.js";
 
 /** Only what scoring needs: no chunk text is read while ranking. */
 type VectorRow = {
@@ -19,6 +21,8 @@ type VectorRow = {
   embedding: Buffer;
   embedding_dim: number;
 };
+
+type ChunkRow = Omit<StoredChunk, "pageStart" | "pageEnd"> & { pageStart: number | null; pageEnd: number | null };
 
 type LexicalRow = {
   id: string;
@@ -62,6 +66,7 @@ export class SqliteVectorStore implements VectorStore {
   private readonly countOtherModels;
   private readonly countChunks;
   private readonly updateEmbedding;
+  private readonly updateProfile;
   private readonly replaceTransaction;
 
   constructor(db: Database.Database) {
@@ -75,9 +80,10 @@ export class SqliteVectorStore implements VectorStore {
     this.selectDocumentLexical = db.prepare<Record<string, string | number>, LexicalRow>(
       `${LEXICAL_SELECT} AND c.document_id = @documentId ORDER BY bm25(chunk_fts) LIMIT @limit`,
     );
-    this.selectChunks = db.prepare<[string, string], StoredChunk>(
+    this.selectChunks = db.prepare<[string, string], ChunkRow>(
       `SELECT c.id AS chunkId, c.document_id AS documentId, d.file_name AS fileName,
-              c.chunk_index AS chunkIndex, c.content
+              c.chunk_index AS chunkIndex, c.content,
+              c.page_start AS pageStart, c.page_end AS pageEnd
        FROM document_chunks c
        JOIN documents d ON d.id = c.document_id AND d.user_id = c.user_id
        WHERE c.user_id = ? AND c.id IN (SELECT value FROM json_each(?))`,
@@ -98,12 +104,17 @@ export class SqliteVectorStore implements VectorStore {
        SET embedding = @embedding, embedding_model = @model, embedding_dim = @dimension
        WHERE user_id = @userId AND document_id = @documentId AND chunk_index = @chunkIndex`,
     );
+    this.updateProfile = db.prepare(
+      `UPDATE documents SET index_profile = @indexProfile, index_fingerprint = @indexFingerprint
+       WHERE user_id = @userId AND id = @documentId`,
+    );
     this.replaceTransaction = db.transaction(
       (
         userId: string,
         documentId: string,
         model: string,
         encoded: Array<{ chunkIndex: number; embedding: Buffer; dimension: number }>,
+        profile?: StoredIndexProfile,
       ) => {
         const stored = this.countChunks.get(userId, documentId)?.count ?? 0;
         if (stored !== encoded.length) {
@@ -114,6 +125,9 @@ export class SqliteVectorStore implements VectorStore {
           if (result.changes !== 1) {
             throw new Error(`Chunk ${update.chunkIndex} does not exist in the document`);
           }
+        }
+        if (profile) {
+          this.updateProfile.run({ userId, documentId, ...profileColumns(profile) });
         }
       },
     );
@@ -180,21 +194,30 @@ export class SqliteVectorStore implements VectorStore {
     if (chunkIds.length === 0) {
       return [];
     }
-    return this.selectChunks.all(userId, JSON.stringify(chunkIds));
+    return this.selectChunks.all(userId, JSON.stringify(chunkIds)).map(({ pageStart, pageEnd, ...chunk }) => ({
+      ...chunk,
+      ...(pageStart !== null && pageEnd !== null ? { pageStart, pageEnd } : {}),
+    }));
   }
 
   async listByDocument(userId: string, documentId: string): Promise<ChunkText[]> {
     return this.selectText.all(userId, documentId);
   }
 
-  async replaceEmbeddings(userId: string, documentId: string, model: string, updates: EmbeddingUpdate[]) {
+  async replaceEmbeddings(
+    userId: string,
+    documentId: string,
+    model: string,
+    updates: EmbeddingUpdate[],
+    profile?: StoredIndexProfile,
+  ) {
     // Encoding validates every vector before the transaction starts.
     const encoded = updates.map((update) => ({
       chunkIndex: update.chunkIndex,
       embedding: encodeVector(update.embedding),
       dimension: update.embedding.length,
     }));
-    this.replaceTransaction(userId, documentId, model, encoded);
+    this.replaceTransaction(userId, documentId, model, encoded, profile);
   }
 
   async deleteByDocument(userId: string, documentId: string) {

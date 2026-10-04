@@ -1,3 +1,4 @@
+import { legacyIndexProfile } from "../../core/index-profile.js";
 import { NotFoundError } from "../../shared/errors.js";
 import { logger } from "../../shared/logger.js";
 import type { DocumentRepository } from "../ports/document-repository.js";
@@ -14,12 +15,12 @@ type Dependencies = {
 const log = logger.child({ operation: "reindexDocument" });
 
 /**
- * Re-embeds a document's stored chunks with the currently configured embeddings model.
+ * Re-embeds a document's stored chunks with the currently configured embeddings model ("re-embed").
  *
- * Reuses the persisted chunk text (the original file is not re-read), so the existing chunking is
- * kept: a changed CHUNK_SIZE/CHUNK_OVERLAP only affects documents uploaded afterwards. All vectors
- * are computed first and then swapped in one transaction, so a failure at any point leaves the
- * document exactly as it was.
+ * Reuses the persisted chunk text and ids - the original file is not re-read and nothing is re-split, so
+ * the chunk layout and extraction stay as they were (use RechunkDocumentUseCase for those). All vectors
+ * are computed first and then swapped in one transaction together with the recorded embedding model and
+ * dimension, so a failure at any point leaves the document exactly as it was.
  */
 export class ReindexDocumentUseCase {
   constructor(private readonly deps: Dependencies) {}
@@ -27,7 +28,8 @@ export class ReindexDocumentUseCase {
   async execute(userId: string, documentId: string): Promise<{ chunksCount: number }> {
     const { documents, vectorStore, embeddings } = this.deps;
 
-    if (!(await documents.findById(userId, documentId))) {
+    const document = await documents.findById(userId, documentId);
+    if (!document) {
       throw new NotFoundError();
     }
 
@@ -39,11 +41,15 @@ export class ReindexDocumentUseCase {
     const vectors = await embeddings.embedDocuments(texts.map((text) => text.content));
     ensureEmbeddingBatch(vectors, texts.length);
 
+    // Only the embedding half of the recipe changes; chunk size, overlap and extractor are carried over.
+    const recorded = document.indexProfile ?? legacyIndexProfile(document.fileName, embeddings.model, vectors[0].length);
+
     await vectorStore.replaceEmbeddings(
       userId,
       documentId,
       embeddings.model,
       texts.map((text, index) => ({ chunkIndex: text.chunkIndex, embedding: vectors[index] })),
+      { ...recorded, embeddingModel: embeddings.model, embeddingDimension: vectors[0].length },
     );
 
     log.info({ userId, documentId, chunks: texts.length, embeddingModel: embeddings.model }, "Document re-indexed");

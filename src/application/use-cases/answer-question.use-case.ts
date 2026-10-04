@@ -1,8 +1,9 @@
+import { groundCitations } from "../../core/citations.js";
 import type { Citation } from "../../core/document.js";
 import type { RetrievedChunk } from "../../core/retrieval.js";
 import { ValidationError } from "../../shared/errors.js";
 import { logger } from "../../shared/logger.js";
-import type { InfoLog } from "../../shared/logger.js";
+import type { InfoLog, WarnLog } from "../../shared/logger.js";
 import type { HybridRetriever, RetrievalTrace } from "../hybrid-retriever.js";
 import { buildAnswerMessages } from "../prompts/answer-question.prompt.js";
 import type { ChatModel } from "../ports/chat-model.js";
@@ -17,8 +18,11 @@ export type AnswerQuestionInput = {
 };
 
 export type AnswerQuestionResult = {
+  /** The model's answer with references to non-existent sources removed. */
   answer: string;
   sources: Citation[];
+  /** Result of the deterministic [n] check: which sources the answer cites, and which invalid references were removed. */
+  citations: { cited: number[]; removed: number[] };
 };
 
 type Dependencies = {
@@ -30,12 +34,12 @@ type Dependencies = {
     /** Emit an extra structured entry that explains every retrieval (ids, ranks, counts - never text). */
     ragDebug?: boolean;
   };
-  log?: InfoLog;
+  log?: InfoLog & WarnLog;
 };
 
 /** Retrieval-augmented answering over the asking user's own documents. */
 export class AnswerQuestionUseCase {
-  private readonly log: InfoLog;
+  private readonly log: InfoLog & WarnLog;
 
   constructor(private readonly deps: Dependencies) {
     this.log = deps.log ?? logger.child({ operation: "answerQuestion" });
@@ -61,10 +65,22 @@ export class AnswerQuestionUseCase {
 
     let answer = NO_CONTEXT_ANSWER;
     let generationMs = 0;
+    let citations: AnswerQuestionResult["citations"] = { cited: [], removed: [] };
     if (chunks.length > 0) {
       const generationStart = performance.now();
-      answer = await chatModel.complete(buildAnswerMessages(question, chunks));
+      const generated = await chatModel.complete(buildAnswerMessages(question, chunks));
       generationMs = elapsedSince(generationStart);
+
+      // Only checks that [n] points at one of the excerpts the model was shown - not that it is right.
+      const grounded = groundCitations(generated, chunks.length);
+      answer = grounded.text;
+      citations = { cited: grounded.cited, removed: grounded.unknown };
+      if (grounded.unknown.length > 0) {
+        this.log.warn(
+          { userId: input.userId, removedReferences: grounded.unknown, sources: chunks.length },
+          "The answer cited sources that were not in the context; those references were removed",
+        );
+      }
     }
 
     this.logRequest(input.userId, question, trace, chunks, { generationMs, durationMs: elapsedSince(startedAt) });
@@ -75,9 +91,12 @@ export class AnswerQuestionUseCase {
         documentId: chunk.documentId,
         fileName: chunk.fileName,
         chunkIndex: chunk.chunkIndex,
+        pageStart: chunk.pageStart,
+        pageEnd: chunk.pageEnd,
         rank: index + 1,
         score: chunk.ranking.fusedScore,
       })),
+      citations,
     };
   }
 

@@ -329,7 +329,7 @@ describe("SqliteIndexMaintenance.listIndexedDocuments", () => {
   it("reports owner and file name so each document can be re-indexed in its owner's scope", async () => {
     await seed("user-2", "doc-x", [{ content: "a" }], "x.pdf");
 
-    expect(await stores.maintenance.listIndexedDocuments({ model: "test-model" })).toEqual([
+    expect(await stores.maintenance.listIndexedDocuments({ model: "test-model" })).toMatchObject([
       { userId: "user-2", documentId: "doc-x", fileName: "x.pdf", chunkCount: 1, staleChunkCount: 0 },
     ]);
   });
@@ -343,5 +343,51 @@ describe("lexical query plan", () => {
 
     expect(plan[0].detail).toContain("chunk_fts");
     expect(plan.some((step) => step.detail.includes("SEARCH c USING INTEGER PRIMARY KEY"))).toBe(true);
+  });
+});
+
+describe("SqliteVectorStore.searchLexical: technical text and Unicode", () => {
+  beforeEach(async () => {
+    await seed("user-1", "tech", [
+      "The feed crashed with ECONNRESET while talking to the broker.",
+      "Call useEffect to subscribe, and clean up in the returned function.",
+      "Prose may also say: use effect hooks sparingly.",
+      "The user_id column references accounts; foo.bar is a config key.",
+      "Rate limit: the API answered HTTP_429 after a burst.",
+      "Released as v2.14.1 on Friday; the previous release was 2.13.9.",
+      "Café Müller serves crème brûlée; Straße 12.",
+      "Ошибка подключения к серверу базы данных.",
+    ]);
+  });
+
+  it.each([
+    ["ECONNRESET", "tech-0"],
+    ["econnreset", "tech-0"],
+    ["What does HTTP_429 mean?", "tech-4"],
+    ["http 429", "tech-4"],
+    ["user_id", "tech-3"],
+    ["where is foo.bar defined", "tech-3"],
+    ["v2.14.1", "tech-5"],
+    ["release 2.13.9", "tech-5"],
+  ])("finds %s", async (query, expected) => {
+    expect(ids(await lexical(query))[0]).toBe(expected);
+  });
+
+  it("finds a camelCase identifier verbatim, and an exact match is not drowned by prose", async () => {
+    expect(ids(await lexical("useEffect"))).toEqual(["tech-1"]);
+    expect(ids(await lexical("useeffect"))).toEqual(["tech-1"]);
+  });
+
+  it("matches across case, diacritics and decomposed accents", async () => {
+    expect(ids(await lexical("cafe muller"))[0]).toBe("tech-6");
+    expect(ids(await lexical("CAFÉ"))[0]).toBe("tech-6");
+    expect(ids(await lexical("café"))[0]).toBe("tech-6");
+    expect(ids(await lexical("creme brulee"))[0]).toBe("tech-6");
+    expect(ids(await lexical("ошибка сервера"))).toContain("tech-7");
+  });
+
+  it("punctuation, quotes and operators in a question never break the search", async () => {
+    await expect(lexical('what is "ECONNRESET"?! AND (NOT) * ^ : -')).resolves.toHaveLength(1);
+    await expect(lexical("---")).resolves.toEqual([]);
   });
 });

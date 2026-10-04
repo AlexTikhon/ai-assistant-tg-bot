@@ -1,24 +1,32 @@
 import { parseArgs } from "node:util";
+import type { StaleReason } from "../core/index-profile.js";
 import type {
+  ReindexAction,
   ReindexProgress,
   ReindexReport,
   ReindexScope,
 } from "../application/use-cases/run-reindex.use-case.js";
 
-export const REINDEX_USAGE = `Re-embeds stored chunks with the configured OPENAI_EMBEDDINGS_MODEL.
+export const REINDEX_USAGE = `Brings stored documents in line with the configured index recipe
+(OPENAI_EMBEDDINGS_MODEL, CHUNK_SIZE, CHUNK_OVERLAP and the built-in chunking/extraction versions).
 
 Usage: npm run reindex -- [options]
 
-  (no options)        re-index documents whose vectors are stale (other model, wrong dimension, unreadable)
-  --all               re-index every document
-  --document <id>     re-index one document
-  --dry-run           only list what would be re-indexed (no OpenAI calls, no changes)
+  (no options)        re-embed documents whose vectors are outdated (other model, wrong dimension, unreadable);
+                      keeps their chunks. Other kinds of staleness are only reported.
+  --rechunk           also rebuild documents with a different chunk size/overlap/algorithm or extraction
+                      (e.g. PDFs without page numbers) from their original files
+  --all               every document (re-embed; with --rechunk: re-chunk)
+  --document <id>     one document
+  --dry-run           show which documents are stale and why, and what would be done
+                      (no OpenAI calls, no changes, no API key needed)
   --help              show this help
 
-Chunk text is reused as stored; to apply new CHUNK_SIZE/CHUNK_OVERLAP settings, delete and re-upload the document.`;
+Re-embed: new vectors for the stored chunk text.   Re-chunk: re-read the original file, split it again, embed the new chunks.
+Either way the old index stays in place until the new one is complete.`;
 
 export type ReindexCommand =
-  | { kind: "run"; scope: ReindexScope; dryRun: boolean }
+  | { kind: "run"; scope: ReindexScope; dryRun: boolean; rechunk: boolean }
   | { kind: "help" }
   | { kind: "error"; message: string };
 
@@ -31,6 +39,7 @@ export function parseReindexArgs(argv: string[]): ReindexCommand {
       options: {
         all: { type: "boolean" },
         document: { type: "string" },
+        rechunk: { type: "boolean" },
         "dry-run": { type: "boolean" },
         help: { type: "boolean" },
       },
@@ -55,27 +64,97 @@ export function parseReindexArgs(argv: string[]): ReindexCommand {
         ? { kind: "all" }
         : { kind: "stale" };
 
-  return { kind: "run", scope, dryRun: values["dry-run"] ?? false };
+  return { kind: "run", scope, dryRun: values["dry-run"] ?? false, rechunk: values.rechunk ?? false };
 }
 
-const PROGRESS_VERB = { planned: "would re-index", reindexed: "re-indexed", failed: "FAILED" } as const;
+const DONE: Record<ReindexAction, string> = { reembed: "re-embedded", rechunk: "re-chunked" };
+const PLANNED: Record<ReindexAction, string> = { reembed: "would re-embed", rechunk: "would re-chunk" };
+const FAILED: Record<ReindexAction, string> = { reembed: "re-embedding", rechunk: "re-chunking" };
 
 export function formatProgress(progress: ReindexProgress) {
-  const prefix = `[${progress.position}/${progress.total}] ${PROGRESS_VERB[progress.outcome]} ${progress.fileName} (${progress.documentId})`;
+  const verb =
+    progress.outcome === "planned"
+      ? PLANNED[progress.action]
+      : progress.outcome === "failed"
+        ? `FAILED ${FAILED[progress.action]}`
+        : DONE[progress.action];
+  const prefix = `[${progress.position}/${progress.total}] ${verb} ${progress.fileName} (${progress.documentId})`;
   return progress.outcome === "failed" ? `${prefix}: ${progress.reason}` : `${prefix}: ${progress.chunks} chunks`;
 }
 
-export function formatReport(report: ReindexReport) {
-  if (report.documents === 0) {
-    return `Nothing to re-index: all chunks already match ${report.model}.`;
+const FIELD_LABEL: Record<StaleReason["field"], string> = {
+  embeddingModel: "embedding model",
+  embeddingDimension: "embedding dimension",
+  chunkSize: "chunk size",
+  chunkOverlap: "chunk overlap",
+  chunkingVersion: "chunking version",
+  extractorVersion: "extractor version",
+  vectors: "stored vectors",
+};
+
+function formatValue(field: StaleReason["field"], value: string | number | null) {
+  return field === "chunkingVersion" ? `v${value}` : String(value);
+}
+
+function formatReasons(reasons: StaleReason[]) {
+  return reasons.flatMap((reason) => [
+    `  ${FIELD_LABEL[reason.field]}:`,
+    `    ${formatValue(reason.field, reason.from)} -> ${formatValue(reason.field, reason.to)}`,
+  ]);
+}
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+function formatStaleDocuments(report: ReindexReport) {
+  return report.stale.flatMap((document) => {
+    const outcome = document.action ? PLANNED[document.action] : "not changed by this run (add --rechunk)";
+    return [`${document.fileName} (${document.documentId})`, ...formatReasons(document.reasons), `  -> ${outcome}`, ""];
+  });
+}
+
+function formatSummary(report: ReindexReport) {
+  const { summary } = report;
+  const lines = [
+    "Summary:",
+    plural(summary.checked, "document checked", "documents checked"),
+    plural(summary.embedding, "stale embedding", "stale embeddings"),
+    `${summary.chunking} stale chunk ${summary.chunking === 1 ? "layout" : "layouts"}`,
+    plural(summary.extractor, "extraction-version change", "extraction-version changes"),
+  ];
+  if (summary.unknownChunkLayout > 0) {
+    lines.push(
+      `${plural(summary.unknownChunkLayout, "document", "documents")} with an unrecorded chunk layout (indexed before recipes were tracked)`,
+    );
   }
+  return lines;
+}
+
+export function formatReport(report: ReindexReport) {
+  const lines: string[] = [];
+
   if (report.dryRun) {
-    return `Dry run: ${report.documents} documents (${report.chunks} chunks) would be re-indexed with ${report.model}.`;
+    lines.push(...formatStaleDocuments(report), ...formatSummary(report), "");
   }
 
-  const lines = [
-    `${report.succeeded} of ${report.documents} documents re-indexed (${report.chunksReindexed} chunks) with ${report.model}.`,
-  ];
+  if (report.documents === 0) {
+    lines.push(`Nothing to re-index: all chunks already match ${report.model}.`);
+  } else if (report.dryRun) {
+    lines.push(`Dry run: ${report.documents} documents (${report.chunks} chunks) would be re-indexed with ${report.model}.`);
+  } else {
+    lines.push(
+      `${report.succeeded} of ${report.documents} documents re-indexed (${report.chunksReindexed} chunks) with ${report.model}.`,
+      `${report.reembedded} re-embedded, ${report.rechunked} re-chunked.`,
+    );
+  }
+
+  const untouched = report.stale.filter((document) => document.action === null).length;
+  if (untouched > 0) {
+    lines.push(
+      `${plural(untouched, "stale document was", "stale documents were")} not changed by this run: ` +
+        "chunk-layout and extraction changes need --rechunk.",
+    );
+  }
+
   if (report.failed.length > 0) {
     lines.push(`${report.failed.length} failed; their previous data is unchanged:`);
     lines.push(...report.failed.map((item) => `  - ${item.fileName} (${item.documentId}): ${item.reason}`));

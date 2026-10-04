@@ -1,0 +1,30 @@
+{
+  "_comment": "Configurations for `npm run eval:retrieval -- --compare eval/comparisons/default.json`. Settings that are not listed come from the environment (the bot's configuration). The first entry is the reference the others are compared against. Copy this file to try your own grid.",
+  "configs": [
+    { "name": "current" },
+
+    { "name": "vector-only", "lexicalLimit": 0 },
+    { "name": "keyword-only", "semanticLimit": 0 },
+
+    { "name": "rrfK=10", "rrfK": 10 },
+    { "name": "rrfK=30", "rrfK": 30 },
+    { "name": "rrfK=100", "rrfK": 100 },
+
+    { "name": "limits 10/10", "semanticLimit": 10, "lexicalLimit": 10 },
+    { "name": "limits 10/30", "semanticLimit": 10, "lexicalLimit": 30 },
+    { "name": "limits 30/10", "semanticLimit": 30, "lexicalLimit": 10 },
+    { "name": "limits 40/40", "semanticLimit": 40, "lexicalLimit": 40 },
+
+    { "name": "topK=3", "topK": 3 },
+    { "name": "topK=8", "topK": 8 },
+
+    { "name": "minScore=0.1", "minScore": 0.1 },
+    { "name": "minScore=0.3", "minScore": 0.3 },
+
+    { "name": "context 3000", "contextMaxChars": 3000 },
+
+    { "name": "chunks 500/75", "chunkSize": 500, "chunkOverlap": 75 },
+    { "name": "chunks 700/100", "chunkSize": 700, "chunkOverlap": 100 },
+    { "name": "chunks 1500/200", "chunkSize": 1500, "chunkOverlap": 200 }
+  ]
+}

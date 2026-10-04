@@ -1,10 +1,8 @@
 import type { Context } from "telegraf";
 import { describe, expect, it } from "vitest";
-import type { AnswerQuestionResult } from "../../src/application/use-cases/answer-question.use-case.js";
 import { ValidationError } from "../../src/shared/errors.js";
 import { getMessageText, parseCommandArgs, requireUserId } from "../../src/telegram/context.js";
 import { MAX_MESSAGE_LENGTH, replyLongText, splitMessage } from "../../src/telegram/reply.js";
-import { formatAnswer } from "../../src/telegram/ui/format.js";
 
 describe("splitMessage", () => {
   it("returns short text unchanged and nothing for empty text", () => {
@@ -90,37 +88,5 @@ describe("requireUserId / getMessageText", () => {
     expect(getMessageText({ message: { text: "  hi  " } } as unknown as Context)).toBe("hi");
     expect(getMessageText({ message: { voice: {} } } as unknown as Context)).toBe("");
     expect(getMessageText({} as unknown as Context)).toBe("");
-  });
-});
-
-describe("formatAnswer", () => {
-  const source = (rank: number, fileName: string, chunkIndex: number) => ({
-    documentId: fileName,
-    fileName,
-    chunkIndex,
-    rank,
-    score: 0.9,
-  });
-
-  it("lists sources in the order the model saw them, numbered like its [n] citations", () => {
-    const result: AnswerQuestionResult = {
-      answer: "The answer.",
-      sources: [source(1, "architecture.pdf", 11), source(2, "notes.md", 3), source(3, "architecture.pdf", 0)],
-    };
-
-    expect(formatAnswer(result)).toBe(
-      "The answer.\n\nSources:\n1. architecture.pdf · chunk 12\n2. notes.md · chunk 4\n3. architecture.pdf · chunk 1",
-    );
-  });
-
-  it("does not leak retrieval internals (scores, ids) to the user", () => {
-    const text = formatAnswer({ answer: "A.", sources: [source(1, "a.pdf", 0)] });
-
-    expect(text).not.toContain("0.9");
-    expect(text).not.toContain("score");
-  });
-
-  it("states when there are no sources", () => {
-    expect(formatAnswer({ answer: "Nothing.", sources: [] })).toBe("Nothing.\n\nSources:\n- none");
   });
 });

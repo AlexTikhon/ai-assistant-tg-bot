@@ -1,6 +1,6 @@
 import { selectContext } from "../core/context-selection.js";
 import type { SkipReason } from "../core/context-selection.js";
-import { reciprocalRankFusion } from "../core/rank-fusion.js";
+import { DEFAULT_RRF_K, reciprocalRankFusion } from "../core/rank-fusion.js";
 import type { RetrievedChunk } from "../core/retrieval.js";
 import type { EmbeddingsProvider } from "./ports/embeddings-provider.js";
 import type { VectorStore } from "./ports/vector-store.js";
@@ -14,6 +14,8 @@ export type RetrievalOptions = {
   /** Depth of the semantic and the lexical candidate lists that are fused. */
   semanticLimit: number;
   lexicalLimit: number;
+  /** Reciprocal rank fusion constant; larger flattens the advantage of top ranks. Default 60. */
+  rrfK?: number;
   /** Approximate budget for the summed length of the selected chunk texts. */
   contextMaxChars: number;
 };
@@ -42,6 +44,11 @@ export type RetrievalTrace = {
 export type RetrievalResult = {
   /** The context for the model, most relevant first. */
   chunks: RetrievedChunk[];
+  /**
+   * Every candidate that was ranked and loaded, in fused order, *before* de-duplication, per-document caps
+   * and the context budget. `chunks` is a subset. For diagnostics and evaluation (did selection drop evidence?).
+   */
+  candidates: RetrievedChunk[];
   trace: RetrievalTrace;
 };
 
@@ -101,13 +108,14 @@ export class HybridRetriever {
     );
 
     const [fused, fusionMs] = await this.timed(() =>
-      reciprocalRankFusion(semantic, lexical).slice(0, options.topK * CANDIDATE_POOL_FACTOR),
+      reciprocalRankFusion(semantic, lexical, options.rrfK ?? DEFAULT_RRF_K).slice(0, options.topK * CANDIDATE_POOL_FACTOR),
     );
 
-    const [{ selection, loaded }, contextMs] = await this.timed(() => this.selectFinalContext(input.userId, fused));
+    const [{ selection, candidates }, contextMs] = await this.timed(() => this.selectFinalContext(input.userId, fused));
 
     return {
       chunks: selection.selected,
+      candidates,
       trace: {
         timings: {
           embeddingMs,
@@ -121,7 +129,7 @@ export class HybridRetriever {
           semantic: semantic.length,
           lexical: lexical.length,
           fused: fused.length,
-          loaded,
+          loaded: candidates.length,
           selected: selection.selected.length,
         },
         contextChars: selection.selected.reduce((sum, chunk) => sum + chunk.content.length, 0),
@@ -157,6 +165,6 @@ export class HybridRetriever {
       maxChars: options.contextMaxChars,
       maxPerDocument: Math.max(1, Math.ceil(options.topK / 2)),
     });
-    return { selection, loaded: candidates.length };
+    return { selection, candidates };
   }
 }

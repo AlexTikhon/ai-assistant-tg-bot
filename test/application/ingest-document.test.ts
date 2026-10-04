@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { DocumentRepository } from "../../src/application/ports/document-repository.js";
 import { IngestDocumentUseCase } from "../../src/application/use-cases/ingest-document.use-case.js";
 import { ValidationError } from "../../src/shared/errors.js";
-import { createTestStores, InMemoryFileStorage, KeywordEmbeddings, Utf8Extractor } from "../support/fakes.js";
+import { buildIndexProfile } from "../../src/core/index-profile.js";
+import { createTestStores, InMemoryFileStorage, KeywordEmbeddings, PAGE_BREAK, Utf8Extractor } from "../support/fakes.js";
 
 let stores: ReturnType<typeof createTestStores>;
 let files: InMemoryFileStorage;
@@ -235,5 +236,48 @@ describe("IngestDocumentUseCase per-user limits", () => {
     ]);
 
     expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+  });
+
+  describe("index profile and provenance", () => {
+    it("records the recipe the document was indexed with", async () => {
+      const result = await createUseCase().execute(upload());
+
+      const document = await stores.documents.findById("user-1", result.documentId);
+      expect(document?.indexProfile).toEqual(
+        buildIndexProfile({
+          fileName: "pets.txt",
+          embeddingModel: "test-model",
+          embeddingDimension: 4,
+          chunkSize: options.chunkSize,
+          chunkOverlap: options.chunkOverlap,
+        }),
+      );
+    });
+
+    it("stores real page ranges for a paged PDF and none for text documents", async () => {
+      const pages = ["Cats sleep. ".repeat(28), "Dogs bark. ".repeat(28), "Tax forms. ".repeat(28)];
+      const pdf = await createUseCase().execute({
+        userId: "user-1",
+        fileName: "manual.pdf",
+        mimeType: "application/pdf",
+        data: Buffer.from(pages.join(PAGE_BREAK)),
+      });
+      const text = await createUseCase().execute(upload({ fileName: "plain.txt" }));
+
+      const rows = (documentId: string) =>
+        stores.db
+          .prepare("SELECT content, page_start AS s, page_end AS e FROM document_chunks WHERE document_id = ? ORDER BY chunk_index")
+          .all(documentId) as Array<{ content: string; s: number | null; e: number | null }>;
+
+      const pdfRows = rows(pdf.documentId);
+      expect(pdfRows.length).toBeGreaterThan(2);
+      expect(pdfRows.every((row) => row.s !== null && row.e !== null && row.e >= row.s)).toBe(true);
+      expect(pdfRows[0].s).toBe(1);
+      expect(pdfRows[pdfRows.length - 1].e).toBe(3);
+      // A chunk that only contains dog text can only come from page 2.
+      const dogOnly = pdfRows.find((row) => row.content.includes("Dogs bark") && !row.content.includes("Cats sleep") && !row.content.includes("Tax forms"));
+      expect(dogOnly).toMatchObject({ s: 2, e: 2 });
+      expect(rows(text.documentId).every((row) => row.s === null && row.e === null)).toBe(true);
+    });
   });
 });

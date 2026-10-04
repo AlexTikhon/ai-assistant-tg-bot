@@ -26,6 +26,9 @@ export type StoredChunk = {
   fileName: string;
   chunkIndex: number;
   content: string;
+  /** Source pages of a PDF chunk (see ChunkRecord); undefined when unknown. */
+  pageStart?: number;
+  pageEnd?: number;
 };
 
 /** A candidate chunk ready to become LLM context, with the reason it was retrieved. */

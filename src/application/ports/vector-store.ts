@@ -1,5 +1,6 @@
 import type { ChunkMatch, StoredChunk } from "../../core/retrieval.js";
 import type { ChunkText } from "../../core/document.js";
+import type { StoredIndexProfile } from "../../core/index-profile.js";
 
 export type SimilaritySearch = {
   userId: string;
@@ -45,8 +46,15 @@ export interface VectorStore {
   /**
    * Replaces the vectors of *every* chunk of a document (text and ids stay) atomically: either all
    * chunks switch to `model` or none does. Throws if `updates` does not match the stored chunks.
+   * When `profile` is given it becomes the document's recorded index profile in the same transaction.
    */
-  replaceEmbeddings(userId: string, documentId: string, model: string, updates: EmbeddingUpdate[]): Promise<void>;
+  replaceEmbeddings(
+    userId: string,
+    documentId: string,
+    model: string,
+    updates: EmbeddingUpdate[],
+    profile?: StoredIndexProfile,
+  ): Promise<void>;
   /** Removes a document's vectors. Idempotent; a no-op when deleting the document already cascaded. */
   deleteByDocument(userId: string, documentId: string): Promise<void>;
 }

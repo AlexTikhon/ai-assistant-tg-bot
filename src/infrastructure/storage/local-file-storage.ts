@@ -18,18 +18,25 @@ export class LocalFileStorage implements FileStorage {
     return storedName;
   }
 
-  async delete(storedName: string) {
-    // storedName comes from the database; refuse anything that is not a plain file name.
-    if (path.basename(storedName) !== storedName) {
-      throw new Error("Invalid stored file name");
-    }
+  async read(storedName: string) {
+    return fs.readFile(this.resolve(storedName));
+  }
 
+  async delete(storedName: string) {
     try {
-      await fs.unlink(path.join(this.directory, storedName));
+      await fs.unlink(this.resolve(storedName));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
     }
+  }
+
+  /** storedName comes from the database; refuse anything that is not a plain file name. */
+  private resolve(storedName: string) {
+    if (path.basename(storedName) !== storedName) {
+      throw new Error("Invalid stored file name");
+    }
+    return path.join(this.directory, storedName);
   }
 }

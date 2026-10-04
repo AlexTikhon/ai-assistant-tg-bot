@@ -8,9 +8,13 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "reindex": "tsx src/cli/reindex.ts",
+    "eval:retrieval": "tsx src/cli/eval-retrieval.ts",
+    "eval:retrieval:live": "tsx src/cli/eval-retrieval.ts --live",
+    "bench:retrieval": "tsx src/cli/bench-retrieval.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:retrieval": "tsx src/cli/eval-retrieval.ts --baseline eval/baseline.json"
   },
   "keywords": [],
   "author": "Alex Tikhon",

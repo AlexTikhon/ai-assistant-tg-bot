@@ -1,0 +1,22 @@
+{
+  "description": "Minimum offline retrieval quality (npm run test:retrieval). Measured with the deterministic eval-lexicon-v1 embedder on eval/datasets/retrieval.jsonl: overall Recall@1/3/5 = 0.68/0.89/0.96, MRR 0.83. The minimums sit below the measured values (and the tolerance below that) so that one flipped question does not fail the check, but a broken FTS query, vector scan, RRF, de-duplication or chunking does: the per-tag entries guard each retrieval path on its own (exact-term needs keyword search, semantic-only needs vector search). Raise them in a PR when quality has genuinely improved.",
+  "config": {
+    "chunkSize": 1000,
+    "chunkOverlap": 150,
+    "topK": 5,
+    "minScore": 0.2,
+    "semanticLimit": 20,
+    "lexicalLimit": 20,
+    "rrfK": 60,
+    "contextMaxChars": 6000
+  },
+  "minimums": {
+    "recallAt1": 0.6,
+    "recallAt3": 0.8,
+    "recallAt5": 0.9,
+    "mrr": 0.75,
+    "exact-term/recallAt5": 0.8,
+    "semantic-only/recallAt5": 0.6
+  },
+  "tolerance": 0.02
+}

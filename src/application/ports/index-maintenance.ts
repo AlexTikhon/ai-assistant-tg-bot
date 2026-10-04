@@ -1,3 +1,5 @@
+import type { StoredIndexProfile } from "../../core/index-profile.js";
+
 /** The embeddings a healthy index should contain. `dimension` is only known after asking the provider. */
 export type EmbeddingTarget = {
   model: string;
@@ -11,6 +13,12 @@ export type IndexedDocument = {
   chunkCount: number;
   /** Chunks whose vector is from another model, unreadable, or of an unexpected dimension. */
   staleChunkCount: number;
+  /**
+   * How the document was indexed. The embedding fields always describe the vectors that search really
+   * uses (read from the chunks). For documents indexed before recipes were recorded, chunk size and
+   * overlap are null (unknown) and the extractor is the legacy one.
+   */
+  storedProfile: StoredIndexProfile;
 };
 
 /**

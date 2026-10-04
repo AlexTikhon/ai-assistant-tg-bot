@@ -2,6 +2,7 @@ import type { ChatMessage, ChatModel } from "../../src/application/ports/chat-mo
 import type { EmbeddingsProvider } from "../../src/application/ports/embeddings-provider.js";
 import type { FileStorage } from "../../src/application/ports/file-storage.js";
 import type { DocumentTextExtractor, ExtractionInput } from "../../src/application/ports/text-extractor.js";
+import type { ExtractedDocument } from "../../src/core/pages.js";
 import type { ChunkRecord, DocumentRecord } from "../../src/core/document.js";
 import { openDatabase } from "../../src/infrastructure/sqlite/database.js";
 import { SqliteIndexMaintenance } from "../../src/infrastructure/sqlite/sqlite-index-maintenance.js";
@@ -25,6 +26,7 @@ export function createTestStores() {
  */
 export class KeywordEmbeddings implements EmbeddingsProvider {
   documentCalls: string[][] = [];
+  queryCalls: string[] = [];
   failWith?: Error;
   /** Overrides the vectors returned for documents (e.g. to simulate a misbehaving provider). */
   documentVectorsOverride?: number[][];
@@ -47,6 +49,7 @@ export class KeywordEmbeddings implements EmbeddingsProvider {
   }
 
   async embedQuery(text: string) {
+    this.queryCalls.push(text);
     if (this.failWith) throw this.failWith;
     return this.embed(text);
   }
@@ -67,6 +70,7 @@ export class InMemoryFileStorage implements FileStorage {
   files = new Map<string, Buffer>();
   failOnSave = false;
   failOnDelete = false;
+  failOnRead = false;
   private counter = 0;
 
   async save(fileName: string, data: Buffer) {
@@ -76,16 +80,38 @@ export class InMemoryFileStorage implements FileStorage {
     return storedName;
   }
 
+  async read(storedName: string) {
+    const data = this.files.get(storedName);
+    if (this.failOnRead || !data) throw new Error(`cannot read ${storedName}`);
+    return data;
+  }
+
   async delete(storedName: string) {
     if (this.failOnDelete) throw new Error("permission denied");
     this.files.delete(storedName);
   }
 }
 
-/** Treats the uploaded bytes as UTF-8 text. */
+/** Separates the pages of a test "PDF" for Utf8Extractor. */
+export const PAGE_BREAK = "<<page-break>>";
+
+/**
+ * Treats the uploaded bytes as UTF-8 text. A file named *.pdf that contains PAGE_BREAK markers has pages,
+ * which gives tests page provenance without a real PDF parser. Anything else has no pages.
+ */
 export class Utf8Extractor implements DocumentTextExtractor {
-  async extract(input: ExtractionInput) {
-    return input.data.toString("utf-8");
+  failWith?: Error;
+  calls = 0;
+
+  async extract(input: ExtractionInput): Promise<ExtractedDocument> {
+    this.calls += 1;
+    if (this.failWith) throw this.failWith;
+    const text = input.data.toString("utf-8");
+    if (!input.fileName.toLowerCase().endsWith(".pdf") || !text.includes(PAGE_BREAK)) {
+      return { text };
+    }
+    const pages = text.split(PAGE_BREAK).map((page, index) => ({ pageNumber: index + 1, text: page }));
+    return { text: pages.map((page) => page.text).join("\n\n"), pages };
   }
 }
 

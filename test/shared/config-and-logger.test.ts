@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../../src/config/config.js";
+import { loadConfig, loadToolConfig, openAiConfig, telegramConfig } from "../../src/config/config.js";
 import { scrubSecrets } from "../../src/shared/logger.js";
 import { normalizeText } from "../../src/shared/utils/text.js";
 
@@ -20,6 +20,7 @@ describe("loadConfig", () => {
       minScore: 0.2,
       semanticLimit: 20,
       lexicalLimit: 20,
+      rrfK: 60,
       contextMaxChars: 6000,
     });
     expect(config.limits).toEqual({
@@ -88,5 +89,32 @@ describe("scrubSecrets", () => {
 describe("normalizeText", () => {
   it("keeps paragraph structure while cleaning whitespace and NUL bytes", () => {
     expect(normalizeText("﻿a \t b\u0000\r\n\r\n\r\n\r\nc  \n d")).toBe("a b\n\nc\nd");
+  });
+});
+
+describe("config sections", () => {
+  it("loadToolConfig needs neither the Telegram token nor an OpenAI key", () => {
+    const config = loadToolConfig({});
+
+    expect(config.openai.embeddingsModel).toBe("text-embedding-3-small");
+    expect(config.chunking).toEqual({ chunkSize: 1000, chunkOverlap: 150 });
+    expect(config.retrieval.rrfK).toBe(60);
+    expect(config).not.toHaveProperty("telegram");
+    expect(JSON.stringify(config)).not.toContain("botToken");
+  });
+
+  it("loadToolConfig still validates the sections it uses", () => {
+    expect(() => loadToolConfig({ CHUNK_SIZE: "100", CHUNK_OVERLAP: "100" })).toThrow(/CHUNK_OVERLAP/);
+    expect(() => loadToolConfig({ RETRIEVAL_TOP_K: "0", RETRIEVAL_RRF_K: "x" })).toThrow(/RETRIEVAL_TOP_K[\s\S]*RETRIEVAL_RRF_K/);
+  });
+
+  it("the Telegram section alone demands the bot token", () => {
+    expect(() => telegramConfig.load({})).toThrow(/TELEGRAM_BOT_TOKEN/);
+    expect(telegramConfig.load({ TELEGRAM_BOT_TOKEN: "123:abc" }).telegram.botToken).toBe("123:abc");
+    expect(() => openAiConfig.load({})).toThrow(/OPENAI_API_KEY/);
+  });
+
+  it("loadConfig reports every problem of every section at once", () => {
+    expect(() => loadConfig({ RETRIEVAL_TOP_K: "0" })).toThrow(/TELEGRAM_BOT_TOKEN[\s\S]*OPENAI_API_KEY[\s\S]*RETRIEVAL_TOP_K|RETRIEVAL_TOP_K[\s\S]*TELEGRAM_BOT_TOKEN/);
   });
 });

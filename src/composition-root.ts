@@ -6,13 +6,16 @@ import { AnswerQuestionUseCase } from "./application/use-cases/answer-question.u
 import { DeleteDocumentUseCase } from "./application/use-cases/delete-document.use-case.js";
 import { IngestDocumentUseCase } from "./application/use-cases/ingest-document.use-case.js";
 import { ListDocumentsUseCase } from "./application/use-cases/list-documents.use-case.js";
+import { RechunkDocumentUseCase } from "./application/use-cases/rechunk-document.use-case.js";
 import { ReindexDocumentUseCase } from "./application/use-cases/reindex-document.use-case.js";
 import { RunReindexUseCase } from "./application/use-cases/run-reindex.use-case.js";
 import { SummarizeDocumentUseCase } from "./application/use-cases/summarize-document.use-case.js";
-import type { AppConfig } from "./config/config.js";
+import type { AppConfig, ToolConfig } from "./config/config.js";
+import type { EmbeddingsProvider } from "./application/ports/embeddings-provider.js";
 import { FileTextExtractor } from "./infrastructure/documents/file-text-extractor.js";
 import { createOpenAIChatModel } from "./infrastructure/openai/openai-chat-model.js";
 import { createOpenAIEmbeddings } from "./infrastructure/openai/openai-embeddings.js";
+import { OfflineEmbeddings } from "./infrastructure/openai/offline-embeddings.js";
 import { OpenAISpeechToText } from "./infrastructure/openai/openai-speech-to-text.js";
 import { openDatabase } from "./infrastructure/sqlite/database.js";
 import { SqliteDocumentRepository } from "./infrastructure/sqlite/sqlite-document-repository.js";
@@ -36,22 +39,24 @@ export type ReindexTool = {
   close(): void;
 };
 
-/** The adapters shared by the bot and the maintenance CLI. */
-function createStorage(config: AppConfig) {
-  fs.mkdirSync(config.storage.dataDir, { recursive: true });
+/** What the adapters shared by the bot and the maintenance CLI need; no Telegram settings. */
+type StorageSettings = {
+  storage: { dataDir: string; sqlitePath: string };
+  embeddings: EmbeddingsProvider;
+  legacyEmbeddingModel: string;
+};
 
-  const db = openDatabase(config.storage.sqlitePath, { legacyEmbeddingModel: config.openai.embeddingsModel });
+function createStorage(settings: StorageSettings) {
+  fs.mkdirSync(settings.storage.dataDir, { recursive: true });
+
+  const db = openDatabase(settings.storage.sqlitePath, { legacyEmbeddingModel: settings.legacyEmbeddingModel });
   try {
     return {
       db,
       documents: new SqliteDocumentRepository(db),
       vectorStore: new SqliteVectorStore(db),
       maintenance: new SqliteIndexMaintenance(db),
-      embeddings: createOpenAIEmbeddings({
-        apiKey: config.openai.apiKey,
-        model: config.openai.embeddingsModel,
-        timeoutMs: config.openai.requestTimeoutMs,
-      }),
+      embeddings: settings.embeddings,
     };
   } catch (error) {
     db.close();
@@ -64,7 +69,16 @@ function createStorage(config: AppConfig) {
  * injects them into the use cases, and hands the use cases to the Telegram layer.
  */
 export function createApplication(config: AppConfig): Application {
-  const { db, documents, vectorStore, maintenance, embeddings } = createStorage(config);
+  const embeddings = createOpenAIEmbeddings({
+    apiKey: config.openai.apiKey,
+    model: config.openai.embeddingsModel,
+    timeoutMs: config.openai.requestTimeoutMs,
+  });
+  const { db, documents, vectorStore, maintenance } = createStorage({
+    storage: config.storage,
+    embeddings,
+    legacyEmbeddingModel: config.openai.embeddingsModel,
+  });
 
   try {
     const files = new LocalFileStorage(config.storage.filesDir);
@@ -116,7 +130,16 @@ export function createApplication(config: AppConfig): Application {
 
     return {
       bot,
-      checkIndex: async () => void (await checkIndexCompatibility(maintenance, embeddings.model, logger)),
+      checkIndex: async () =>
+        void (await checkIndexCompatibility(
+          maintenance,
+          {
+            embeddingModel: embeddings.model,
+            chunkSize: config.ingestion.chunkSize,
+            chunkOverlap: config.ingestion.chunkOverlap,
+          },
+          logger,
+        )),
       close: () => db.close(),
     };
   } catch (error) {
@@ -125,15 +148,37 @@ export function createApplication(config: AppConfig): Application {
   }
 }
 
-/** Wires the re-indexing workflow for `npm run reindex` (no Telegram involved). */
-export function createReindexTool(config: AppConfig): ReindexTool {
-  const { db, documents, vectorStore, maintenance, embeddings } = createStorage(config);
+/**
+ * Wires the re-indexing workflow for `npm run reindex` (no Telegram involved). Without an API key the
+ * tool can still plan (`--dry-run`); anything that would embed fails with a clear message instead.
+ */
+export function createReindexTool(config: ToolConfig, credentials: { openaiApiKey?: string } = {}): ReindexTool {
+  const embeddings = credentials.openaiApiKey
+    ? createOpenAIEmbeddings({
+        apiKey: credentials.openaiApiKey,
+        model: config.openai.embeddingsModel,
+        timeoutMs: config.openai.requestTimeoutMs,
+      })
+    : new OfflineEmbeddings(config.openai.embeddingsModel);
+  const { db, documents, vectorStore, maintenance } = createStorage({
+    storage: config.storage,
+    embeddings,
+    legacyEmbeddingModel: config.openai.embeddingsModel,
+  });
 
   return {
     reindex: new RunReindexUseCase({
       maintenance,
       embeddings,
+      chunking: config.chunking,
       reindexDocument: new ReindexDocumentUseCase({ documents, vectorStore, embeddings }),
+      rechunkDocument: new RechunkDocumentUseCase({
+        documents,
+        files: new LocalFileStorage(config.storage.filesDir),
+        extractor: new FileTextExtractor(),
+        embeddings,
+        options: { ...config.chunking, maxChunksPerDocument: config.limits.maxChunksPerDocument },
+      }),
     }),
     close: () => db.close(),
   };

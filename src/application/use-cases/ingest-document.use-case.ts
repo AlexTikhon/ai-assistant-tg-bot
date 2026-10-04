@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { isSupportedFileName } from "../../core/document.js";
-import type { ChunkRecord, DocumentRecord } from "../../core/document.js";
-import { splitText } from "../../core/text-splitter.js";
+import type { DocumentRecord } from "../../core/document.js";
 import { ValidationError } from "../../shared/errors.js";
 import { KeyedMutex } from "../../shared/keyed-mutex.js";
 import { logger } from "../../shared/logger.js";
-import { normalizeText } from "../../shared/utils/text.js";
-import { ensureEmbeddingBatch } from "../validate-embeddings.js";
+import { prepareIndex, toChunkRecords } from "../prepare-index.js";
 import type { DocumentRepository } from "../ports/document-repository.js";
 import type { EmbeddingsProvider } from "../ports/embeddings-provider.js";
 import type { FileStorage } from "../ports/file-storage.js";
@@ -31,6 +29,8 @@ type Dependencies = {
   files: FileStorage;
   extractor: DocumentTextExtractor;
   embeddings: EmbeddingsProvider;
+  /** Document id source. Random by default; evaluation injects a sequence so that tie-breaking in ranking is reproducible. */
+  newId?: () => string;
   options: {
     maxUploadBytes: number;
     chunkSize: number;
@@ -46,8 +46,8 @@ const log = logger.child({ operation: "ingestDocument" });
 /**
  * Turns an uploaded file into a searchable document.
  *
- * All fallible work that has no side effects (validation, extraction, splitting, embedding) happens
- * first. Only then is the file written, and the metadata + chunks are saved in one transaction. If
+ * All fallible work that has no side effects (validation, extraction, splitting, embedding - see prepareIndex)
+ * happens first. Only then is the file written, and the metadata + chunks are saved in one transaction. If
  * that fails the file is removed again, so a failed ingestion leaves nothing behind.
  *
  * Per-user limits (documents, stored bytes, chunks per document) are checked before any paid work.
@@ -79,26 +79,9 @@ export class IngestDocumentUseCase {
 
     await this.assertWithinQuota(input.userId, input.data.byteLength);
 
-    const text = normalizeText(await extractor.extract(input));
-    if (!text) {
-      throw new ValidationError("Could not extract text from the uploaded file.");
-    }
+    const prepared = await prepareIndex({ extractor, embeddings }, input, options);
 
-    const drafts = splitText(text, { chunkSize: options.chunkSize, chunkOverlap: options.chunkOverlap });
-    if (drafts.length === 0) {
-      throw new ValidationError("The document does not contain enough text to index.");
-    }
-
-    if (drafts.length > options.maxChunksPerDocument) {
-      throw new ValidationError(
-        `This document is too large to index (it would need ${drafts.length} chunks; the limit is ${options.maxChunksPerDocument}). Try splitting it.`,
-      );
-    }
-
-    const vectors = await embeddings.embedDocuments(drafts.map((draft) => draft.content));
-    ensureEmbeddingBatch(vectors, drafts.length);
-
-    const documentId = randomUUID();
+    const documentId = (this.deps.newId ?? randomUUID)();
     const createdAt = new Date().toISOString();
     const storedName = await files.save(input.fileName, input.data);
 
@@ -109,20 +92,12 @@ export class IngestDocumentUseCase {
       storedName,
       mimeType: input.mimeType,
       fileSize: input.data.byteLength,
-      textLength: text.length,
+      textLength: prepared.textLength,
       summary: null,
       createdAt,
+      indexProfile: prepared.profile,
     };
-    const chunks: ChunkRecord[] = drafts.map((draft, index) => ({
-      id: randomUUID(),
-      documentId,
-      userId: input.userId,
-      chunkIndex: draft.chunkIndex,
-      content: draft.content,
-      embedding: vectors[index],
-      embeddingModel: embeddings.model,
-      createdAt,
-    }));
+    const chunks = toChunkRecords(prepared, { documentId, userId: input.userId, createdAt });
 
     try {
       await documents.saveWithChunks(document, chunks);
@@ -138,13 +113,13 @@ export class IngestDocumentUseCase {
         userId: input.userId,
         documentId,
         chunks: chunks.length,
-        textLength: text.length,
+        textLength: prepared.textLength,
         durationMs: Date.now() - startedAt,
       },
       "Document ingested",
     );
 
-    return { documentId, fileName: input.fileName, chunksCount: chunks.length, textLength: text.length };
+    return { documentId, fileName: input.fileName, chunksCount: chunks.length, textLength: prepared.textLength };
   }
 
   private async assertWithinQuota(userId: string, incomingBytes: number) {

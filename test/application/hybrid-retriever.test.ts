@@ -6,7 +6,7 @@ import { createTestStores, KeywordEmbeddings, makeChunk, makeDocument } from "..
 let stores: ReturnType<typeof createTestStores>;
 let embeddings: KeywordEmbeddings;
 
-const baseOptions = { topK: 3, minScore: 0.2, semanticLimit: 10, lexicalLimit: 10, contextMaxChars: 10_000 };
+const baseOptions = { topK: 3, minScore: 0.2, semanticLimit: 10, lexicalLimit: 10, contextMaxChars: 10_000, rrfK: undefined as number | undefined };
 
 function createRetriever(overrides: Partial<typeof baseOptions> = {}, vectorStore: VectorStore = stores.vectorStore) {
   // A clock that advances 5ms per reading makes every stage duration deterministic.
@@ -172,5 +172,42 @@ describe("HybridRetriever", () => {
     embeddings.embedQuery = async () => [Number.NaN];
 
     await expect(retrieve(createRetriever(), "cat?")).rejects.toThrow(/temporarily unavailable/);
+  });
+
+  it("uses the configured RRF constant (default 60)", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps"]);
+
+    const [defaults, tuned] = await Promise.all([
+      retrieve(createRetriever(), "cat"),
+      retrieve(createRetriever({ rrfK: 10 }), "cat"),
+    ]);
+
+    // Found by both methods at rank 1: 2 / (k + 1).
+    expect(defaults.chunks[0].ranking.fusedScore).toBeCloseTo(2 / 61);
+    expect(tuned.chunks[0].ranking.fusedScore).toBeCloseTo(2 / 11);
+  });
+
+  it("can run vector-only or keyword-only by emptying the other candidate list", async () => {
+    await index("user-1", "doc-1", "ops.md", ["the cat sleeps", "Error ECONNRESET upstream"]);
+
+    const vectorOnly = await retrieve(createRetriever({ lexicalLimit: 0 }), "cat ECONNRESET");
+    const keywordOnly = await retrieve(createRetriever({ semanticLimit: 0 }), "cat ECONNRESET");
+
+    expect(vectorOnly.chunks.map((chunk) => chunk.chunkId)).toEqual(["doc-1-0"]);
+    expect(keywordOnly.chunks.map((chunk) => chunk.chunkId).sort()).toEqual(["doc-1-0", "doc-1-1"]);
+    expect(keywordOnly.chunks.every((chunk) => chunk.ranking.semanticRank === undefined)).toBe(true);
+  });
+
+  it("exposes every ranked candidate, including those context selection dropped, for diagnostics", async () => {
+    const same = "the cat sleeps on the sofa";
+    await index("user-1", "doc-1", "a.md", [same]);
+    await index("user-1", "doc-2", "b.md", [same]);
+
+    const result = await retrieve(createRetriever(), "cat sofa");
+
+    expect(result.candidates.map((chunk) => chunk.chunkId).sort()).toEqual(["doc-1-0", "doc-2-0"]);
+    expect(result.chunks).toHaveLength(1); // the exact duplicate was skipped
+    expect(result.candidates[0].content).toBe(same);
+    expect(result.candidates.map((chunk) => chunk.ranking.fusedRank)).toEqual([1, 2]);
   });
 });

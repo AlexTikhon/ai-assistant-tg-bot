@@ -15,7 +15,13 @@ export type RateLimitResult = { allowed: true } | { allowed: false; retryAfterMs
  *
  * Each key keeps at most `limit` timestamps. Idle keys are swept at most once per window while other
  * keys are being checked, so memory is bounded by the users active within the last window and no
- * timers are needed. State is per process; that matches the single-process bot.
+ * timers are needed.
+ *
+ * State lives in memory and is per process: it resets when the bot restarts (a restart grants every user a
+ * fresh allowance) and would not be shared between several instances. That is a deliberate fit for the
+ * single-process, long-polling bot; a shared store (e.g. Redis) would only have to implement `check`.
+ * The limiter knows nothing about Telegram - handlers reach it through the middleware in telegram/rate-limit.ts -
+ * and takes its clock as an option, so tests advance time without waiting.
  */
 export class RateLimiter {
   private readonly hits = new Map<string, number[]>();

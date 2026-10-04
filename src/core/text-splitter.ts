@@ -81,11 +81,18 @@ function overlapTail(chunk: string, limit: number) {
   return "";
 }
 
+/** A chunk plus the character range [start, end) of the splitter input it was cut from. */
+export type PositionedChunk = ChunkDraft & { start: number; end: number };
+
 /**
  * Splits text into overlapping chunks that respect paragraph, line, sentence and word boundaries
  * (in that order of preference). Words are only cut when a single token exceeds `chunkSize`.
+ *
+ * Every chunk is a contiguous slice of the input (`text.slice(start, end) === content`): atoms tile the
+ * text exactly and the overlap is the tail of the preceding atoms. That is what makes it possible to map
+ * a chunk back to the page(s) it came from.
  */
-export function splitText(text: string, options: SplitOptions): ChunkDraft[] {
+export function splitTextWithOffsets(text: string, options: SplitOptions): PositionedChunk[] {
   const { chunkSize, chunkOverlap } = options;
   if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
     throw new RangeError("chunkSize must be a positive integer");
@@ -94,24 +101,41 @@ export function splitText(text: string, options: SplitOptions): ChunkDraft[] {
     throw new RangeError("chunkOverlap must be an integer in [0, chunkSize)");
   }
 
-  const atoms = toAtoms(text, chunkSize, SEPARATORS);
-  const chunks: string[] = [];
+  const raw: Array<{ text: string; start: number }> = [];
   let current = "";
+  let currentStart = 0;
+  let atomStart = 0;
 
-  for (const atom of atoms) {
+  for (const atom of toAtoms(text, chunkSize, SEPARATORS)) {
     if (current.length + atom.length <= chunkSize) {
+      if (current === "") {
+        currentStart = atomStart;
+      }
       current += atom;
-      continue;
+    } else {
+      raw.push({ text: current, start: currentStart });
+      const overlap = overlapTail(current, chunkOverlap);
+      const keepOverlap = overlap.length + atom.length <= chunkSize;
+      current = keepOverlap ? overlap + atom : atom;
+      currentStart = keepOverlap ? atomStart - overlap.length : atomStart;
     }
-
-    chunks.push(current);
-    const overlap = overlapTail(current, chunkOverlap);
-    current = overlap.length + atom.length <= chunkSize ? overlap + atom : atom;
+    atomStart += atom.length;
   }
-  chunks.push(current);
+  raw.push({ text: current, start: currentStart });
 
-  return chunks
-    .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.length > 0)
-    .map((content, chunkIndex) => ({ chunkIndex, content }));
+  return raw
+    .flatMap(({ text: chunk, start }) => {
+      const content = chunk.trim();
+      if (content.length === 0) {
+        return [];
+      }
+      const trimmedStart = start + (chunk.length - chunk.trimStart().length);
+      return [{ content, start: trimmedStart, end: trimmedStart + content.length }];
+    })
+    .map((chunk, chunkIndex) => ({ chunkIndex, ...chunk }));
+}
+
+/** Like `splitTextWithOffsets`, without the positions. */
+export function splitText(text: string, options: SplitOptions): ChunkDraft[] {
+  return splitTextWithOffsets(text, options).map(({ chunkIndex, content }) => ({ chunkIndex, content }));
 }

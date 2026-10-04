@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FileTextExtractor } from "../../src/infrastructure/documents/file-text-extractor.js";
 import { LocalFileStorage } from "../../src/infrastructure/storage/local-file-storage.js";
 import { ValidationError } from "../../src/shared/errors.js";
+import { buildPdf } from "../support/pdf.js";
 
 let directory: string;
 
@@ -39,6 +40,15 @@ describe("LocalFileStorage", () => {
     await expect(storage.delete("../outside.txt")).rejects.toThrow(/Invalid stored file name/);
   });
 
+  it("reads back what was saved, and refuses path traversal and missing files", async () => {
+    const storage = new LocalFileStorage(directory);
+    const storedName = await storage.save("a.txt", Buffer.from("original bytes"));
+
+    expect((await storage.read(storedName)).toString()).toBe("original bytes");
+    await expect(storage.read("../outside.txt")).rejects.toThrow(/Invalid stored file name/);
+    await expect(storage.read("missing.txt")).rejects.toThrow(/ENOENT/);
+  });
+
   it("keeps very long names within filesystem limits", async () => {
     const storage = new LocalFileStorage(directory);
 
@@ -49,42 +59,35 @@ describe("LocalFileStorage", () => {
   });
 });
 
-/** Smallest well-formed PDF with one page containing the text "Hello PDF world". */
-function buildPdf(text: string) {
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-    `<< /Length ${`BT /F1 18 Tf 20 100 Td (${text}) Tj ET`.length} >>\nstream\nBT /F1 18 Tf 20 100 Td (${text}) Tj ET\nendstream`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-  ];
-
-  let pdf = "%PDF-1.4\n";
-  const offsets: number[] = [];
-  objects.forEach((body, index) => {
-    offsets.push(pdf.length);
-    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
-  });
-  const xref = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  offsets.forEach((offset) => (pdf += `${String(offset).padStart(10, "0")} 00000 n \n`));
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-  return Buffer.from(pdf, "latin1");
-}
-
 describe("FileTextExtractor", () => {
   const extractor = new FileTextExtractor();
   const input = (fileName: string, data: Buffer) => ({ fileName, mimeType: "application/octet-stream", data });
 
   it("decodes txt and md files as UTF-8", async () => {
-    expect(await extractor.extract(input("a.txt", Buffer.from("Привет, мир")))).toBe("Привет, мир");
-    expect(await extractor.extract(input("README.MD", Buffer.from("# Title")))).toBe("# Title");
+    expect(await extractor.extract(input("a.txt", Buffer.from("Привет, мир")))).toEqual({ text: "Привет, мир" });
+    expect(await extractor.extract(input("README.MD", Buffer.from("# Title")))).toEqual({ text: "# Title" });
   });
 
   it("extracts text from a PDF", async () => {
-    const text = await extractor.extract(input("doc.pdf", buildPdf("Hello PDF world")));
+    const { text } = await extractor.extract(input("doc.pdf", buildPdf(["Hello PDF world"])));
 
     expect(text).toContain("Hello PDF world");
+  });
+
+  it("returns the text of every PDF page under its real page number, without page-marker noise", async () => {
+    const { pages, text } = await extractor.extract(
+      input("doc.pdf", buildPdf(["First page text", "Second page text", "Third page text"])),
+    );
+
+    expect(pages?.map((page) => page.pageNumber)).toEqual([1, 2, 3]);
+    expect(pages?.map((page) => page.text.trim())).toEqual(["First page text", "Second page text", "Third page text"]);
+    expect(text).toContain("Second page text");
+    expect(text).not.toMatch(/-- \d+ of \d+ --/);
+    expect(pages?.some((page) => /-- \d+ of \d+ --/.test(page.text))).toBe(false);
+  });
+
+  it("has no page information for text files", async () => {
+    expect((await extractor.extract(input("a.md", Buffer.from("x")))).pages).toBeUndefined();
   });
 
   it("reports unreadable PDFs as a validation error", async () => {

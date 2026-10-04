@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { checkIndexCompatibility } from "../../src/application/check-index-compatibility.js";
 import { HybridRetriever } from "../../src/application/hybrid-retriever.js";
+import { RechunkDocumentUseCase } from "../../src/application/use-cases/rechunk-document.use-case.js";
 import { ReindexDocumentUseCase } from "../../src/application/use-cases/reindex-document.use-case.js";
 import { RunReindexUseCase } from "../../src/application/use-cases/run-reindex.use-case.js";
 import type { ReindexProgress } from "../../src/application/use-cases/run-reindex.use-case.js";
 import { ExternalServiceError, NotFoundError } from "../../src/shared/errors.js";
-import { createTestStores, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
+import { createTestStores, InMemoryFileStorage, KeywordEmbeddings, makeChunk, makeDocument, Utf8Extractor } from "../support/fakes.js";
 
 let stores: ReturnType<typeof createTestStores>;
 
 const NEW_MODEL = "new-model";
+const RECIPE = { embeddingModel: NEW_MODEL, chunkSize: 1000, chunkOverlap: 150 };
 
 async function seed(userId: string, documentId: string, texts: string[], model = "test-model", dimension = 4) {
   await stores.documents.saveWithChunks(
@@ -29,8 +31,16 @@ async function seed(userId: string, documentId: string, texts: string[], model =
 }
 
 function createRunner(embeddings: KeywordEmbeddings) {
+  const chunking = { chunkSize: 1000, chunkOverlap: 150 };
   const reindexDocument = new ReindexDocumentUseCase({ ...stores, embeddings });
-  return new RunReindexUseCase({ maintenance: stores.maintenance, reindexDocument, embeddings });
+  const rechunkDocument = new RechunkDocumentUseCase({
+    documents: stores.documents,
+    files: new InMemoryFileStorage(),
+    extractor: new Utf8Extractor(),
+    embeddings,
+    options: { ...chunking, maxChunksPerDocument: 100 },
+  });
+  return new RunReindexUseCase({ maintenance: stores.maintenance, reindexDocument, rechunkDocument, embeddings, chunking });
 }
 
 const models = () =>
@@ -47,11 +57,11 @@ describe("stale embedding detection", () => {
     await seed("user-2", "stale-2", ["a"], "other-model");
     const warnings: Array<{ fields: Record<string, unknown>; message: string }> = [];
 
-    const summary = await checkIndexCompatibility(stores.maintenance, NEW_MODEL, {
+    const summary = await checkIndexCompatibility(stores.maintenance, RECIPE, {
       warn: (fields: Record<string, unknown>, message: string) => void warnings.push({ fields, message }),
     });
 
-    expect(summary).toEqual({ staleDocuments: 2, staleChunks: 3 });
+    expect(summary).toMatchObject({ staleDocuments: 2, staleChunks: 3, embeddingStale: 2 });
     expect(warnings).toHaveLength(1);
     expect(warnings[0].fields).toMatchObject({ embeddingModel: NEW_MODEL, staleDocuments: 2, staleChunks: 3 });
     expect(warnings[0].message).toContain("npm run reindex");
@@ -61,9 +71,9 @@ describe("stale embedding detection", () => {
     await seed("user-1", "fresh", ["a"], NEW_MODEL);
     const warnings: unknown[] = [];
 
-    const summary = await checkIndexCompatibility(stores.maintenance, NEW_MODEL, { warn: () => void warnings.push(1) });
+    const summary = await checkIndexCompatibility(stores.maintenance, RECIPE, { warn: () => void warnings.push(1) });
 
-    expect(summary).toEqual({ staleDocuments: 0, staleChunks: 0 });
+    expect(summary).toMatchObject({ staleDocuments: 0, staleChunks: 0, embeddingStale: 0, chunkingStale: 0 });
     expect(warnings).toEqual([]);
   });
 
@@ -71,7 +81,7 @@ describe("stale embedding detection", () => {
     await seed("user-1", "broken", ["a"], NEW_MODEL);
     stores.db.prepare("UPDATE document_chunks SET embedding = x'', embedding_dim = 0").run();
 
-    expect(await checkIndexCompatibility(stores.maintenance, NEW_MODEL, { warn: () => undefined })).toEqual({
+    expect(await checkIndexCompatibility(stores.maintenance, RECIPE, { warn: () => undefined })).toMatchObject({
       staleDocuments: 1,
       staleChunks: 1,
     });

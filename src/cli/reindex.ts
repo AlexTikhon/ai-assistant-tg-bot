@@ -1,9 +1,12 @@
 import "dotenv/config";
 import { createReindexTool } from "../composition-root.js";
-import { loadConfig } from "../config/config.js";
+import { loadToolConfig, openAiConfig } from "../config/config.js";
 import { formatProgress, formatReport, parseReindexArgs, REINDEX_USAGE } from "./reindex-cli.js";
 
-/** `npm run reindex [-- --all | --document <id>] [--dry-run]`. Exit code 1 on bad input or failed documents. */
+/**
+ * `npm run reindex [-- --all | --document <id>] [--rechunk] [--dry-run]`. Exit code 1 on bad input or failed
+ * documents. Only a real run needs OPENAI_API_KEY (and never TELEGRAM_BOT_TOKEN): a dry run makes no provider call.
+ */
 async function main() {
   const command = parseReindexArgs(process.argv.slice(2));
 
@@ -16,12 +19,15 @@ async function main() {
     return 1;
   }
 
-  const tool = createReindexTool(loadConfig());
+  const config = loadToolConfig();
+  const tool = createReindexTool(config, { openaiApiKey: command.dryRun ? undefined : openAiConfig.load() });
   try {
     const report = await tool.reindex.execute({
       scope: command.scope,
+      rechunk: command.rechunk,
       dryRun: command.dryRun,
-      onProgress: (progress) => console.log(formatProgress(progress)),
+      // A dry run prints its plan, with reasons, as part of the report.
+      onProgress: (progress) => progress.outcome !== "planned" && console.log(formatProgress(progress)),
     });
     console.log(formatReport(report));
     return report.failed.length > 0 ? 1 : 0;
