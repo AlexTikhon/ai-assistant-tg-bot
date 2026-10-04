@@ -6,12 +6,14 @@ import { downloadTelegramFile, tooLargeError } from "../download.js";
 import type { DownloadLimits } from "../download.js";
 import { messages } from "../ui/messages.js";
 import { replyWithAnswer } from "./ask.handler.js";
+import type { AnswerReplyOptions } from "./ask.handler.js";
 
 /** A voice message: download, transcribe, then answer it like a typed question. */
 export function createVoiceHandler(
   speechToText: SpeechToText,
   answerQuestion: AnswerQuestionUseCase,
   limits: DownloadLimits,
+  replyOptions: AnswerReplyOptions = {},
 ) {
   return async (ctx: Context) => {
     const message = ctx.message;
@@ -39,6 +41,6 @@ export function createVoiceHandler(
       return;
     }
 
-    await replyWithAnswer(ctx, answerQuestion, transcript);
+    await replyWithAnswer(ctx, answerQuestion, transcript, replyOptions);
   };
 }

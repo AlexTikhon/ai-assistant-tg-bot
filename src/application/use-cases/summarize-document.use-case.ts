@@ -5,7 +5,8 @@ import { KeyedMutex } from "../../shared/keyed-mutex.js";
 import { logger } from "../../shared/logger.js";
 import { truncateText } from "../../shared/utils/text.js";
 import { buildSummaryMessages } from "../prompts/summarize-document.prompt.js";
-import type { ChatModel } from "../ports/chat-model.js";
+import type { InfoLog } from "../../shared/logger.js";
+import type { ChatMessage, ChatModel } from "../ports/chat-model.js";
 import type { DocumentRepository } from "../ports/document-repository.js";
 import type { VectorStore } from "../ports/vector-store.js";
 
@@ -30,6 +31,7 @@ type Dependencies = {
   vectorStore: VectorStore;
   chatModel: ChatModel;
   options?: Partial<SummaryLimits>;
+  log?: InfoLog;
 };
 
 const DEFAULT_LIMITS: SummaryLimits = { directMaxChars: 12_000, groupMaxChars: 8_000, maxReduceRounds: 4, chunkOverlap: 0 };
@@ -77,42 +79,52 @@ export class SummarizeDocumentUseCase {
     }
 
     const startedAt = Date.now();
-    const summary = await this.summarizeChunks(chunks);
-    await documents.updateSummary(userId, documentId, summary);
+    const calls = { generation: 0 }; // per request: summaries of different documents run concurrently
+    const summary = await this.summarizeChunks(chunks, calls);
+    // Only if the content is still the one that was summarized: a replacement during generation wins.
+    await documents.updateSummary(userId, documentId, summary, document.documentVersion ?? 1);
 
-    log.info({ userId, documentId, chunks: chunks.length, durationMs: Date.now() - startedAt }, "Summary generated");
+    (this.deps.log ?? log).info(
+      { userId, documentId, chunks: chunks.length, generationCalls: calls.generation, durationMs: Date.now() - startedAt },
+      "Summary generated",
+    );
 
     return { document: { ...document, summary }, summary };
   }
 
-  private async summarizeChunks(chunks: ChunkText[]) {
-    const { chatModel } = this.deps;
+  /** One generation call, counted for the cost log. */
+  private generate(calls: { generation: number }, messages: ChatMessage[]) {
+    calls.generation += 1;
+    return this.deps.chatModel.complete(messages);
+  }
+
+  private async summarizeChunks(chunks: ChunkText[], calls: { generation: number }) {
     const texts = trimChunkOverlap(chunks, this.limits.chunkOverlap).filter((text) => text.length > 0);
 
     if (totalLength(texts) <= this.limits.directMaxChars) {
-      return chatModel.complete(buildSummaryMessages(texts.join(SEPARATOR), { kind: "direct" }));
+      return this.generate(calls, buildSummaryMessages(texts.join(SEPARATOR), { kind: "direct" }));
     }
 
-    let partials = await this.summarizeGroups(groupTexts(texts, this.limits.groupMaxChars));
+    let partials = await this.summarizeGroups(groupTexts(texts, this.limits.groupMaxChars), calls);
 
     for (
       let round = 1;
       totalLength(partials) > this.limits.directMaxChars && round <= this.limits.maxReduceRounds;
       round += 1
     ) {
-      partials = await this.summarizeGroups(groupTexts(partials, this.limits.groupMaxChars));
+      partials = await this.summarizeGroups(groupTexts(partials, this.limits.groupMaxChars), calls);
     }
 
     const combined = truncateText(partials.join(SEPARATOR), this.limits.directMaxChars);
-    return chatModel.complete(buildSummaryMessages(combined, { kind: "combine" }));
+    return this.generate(calls, buildSummaryMessages(combined, { kind: "combine" }));
   }
 
   /** Summarizes each group sequentially (deterministic order, gentle on provider rate limits). */
-  private async summarizeGroups(groups: string[]) {
+  private async summarizeGroups(groups: string[], calls: { generation: number }) {
     const summaries: string[] = [];
     for (const [index, group] of groups.entries()) {
       summaries.push(
-        await this.deps.chatModel.complete(buildSummaryMessages(group, { kind: "part", index, total: groups.length })),
+        await this.generate(calls, buildSummaryMessages(group, { kind: "part", index, total: groups.length })),
       );
     }
     return summaries;

@@ -5,6 +5,8 @@ import {
   extractorVersionFor,
   indexFingerprint,
 } from "../core/index-profile.js";
+import { deriveIndexHealth } from "../core/index-health.js";
+import type { IndexHealth } from "../core/index-health.js";
 import type { StaleKind, StaleReason } from "../core/index-profile.js";
 import type { IndexedDocument } from "./ports/index-maintenance.js";
 
@@ -66,6 +68,20 @@ export function assessDocument(document: IndexedDocument, active: ActiveRecipe):
     unknownChunkLayout: document.storedProfile.chunkSize === null || document.storedProfile.chunkOverlap === null,
     fingerprint: indexFingerprint(document.storedProfile),
   };
+}
+
+/**
+ * The document's index health. Unreadable vectors are reported as corruption only (the "vectors" reason that
+ * assessDocument adds for them is not also counted as a stale embedding recipe). `fileMissing` comes from
+ * the file system; null when it was not checked.
+ */
+export function healthOf(assessment: DocumentAssessment, fileMissing: boolean | null): IndexHealth {
+  return deriveIndexHealth({
+    chunkCount: assessment.chunkCount,
+    unreadableChunkCount: assessment.unreadableChunkCount,
+    stale: describeStaleness(assessment.reasons.filter((reason) => reason.field !== "vectors")),
+    fileMissing,
+  });
 }
 
 export function summarizeAssessments(assessments: readonly DocumentAssessment[]): IndexSummary {

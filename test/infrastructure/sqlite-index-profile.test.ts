@@ -262,6 +262,11 @@ describe("migration to schema v5", () => {
         VALUES ('c1','d1','u1',0,'legacy text',x'0000803f','m',1,'2025-01-01T00:00:00Z');
     `);
     first.exec(`
+      DROP INDEX idx_documents_user_hash;
+      ALTER TABLE documents DROP COLUMN content_hash;
+      ALTER TABLE documents DROP COLUMN document_version;
+      ALTER TABLE documents DROP COLUMN updated_at;
+      ALTER TABLE documents DROP COLUMN previous_content_hash;
       ALTER TABLE documents DROP COLUMN index_profile;
       ALTER TABLE documents DROP COLUMN index_fingerprint;
       ALTER TABLE document_chunks DROP COLUMN page_start;
@@ -320,6 +325,11 @@ describe("migration to schema v6: section paths and page labels", () => {
         VALUES ('c1','d1','u1',0,'legacy text',x'0000803f','m',1,3,4,'2025-01-01T00:00:00Z');
     `);
     first.exec(`
+      DROP INDEX idx_documents_user_hash;
+      ALTER TABLE documents DROP COLUMN content_hash;
+      ALTER TABLE documents DROP COLUMN document_version;
+      ALTER TABLE documents DROP COLUMN updated_at;
+      ALTER TABLE documents DROP COLUMN previous_content_hash;
       ALTER TABLE document_chunks DROP COLUMN section_path;
       ALTER TABLE document_chunks DROP COLUMN page_label_start;
       ALTER TABLE document_chunks DROP COLUMN page_label_end;

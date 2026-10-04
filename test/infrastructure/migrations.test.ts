@@ -60,6 +60,20 @@ describe("schema migrations", () => {
     db.close();
   });
 
+  it("adds the lifecycle columns without inventing identity: old documents have an unknown hash and version 1", () => {
+    createLegacyDatabase();
+
+    const db = openDatabase(dbPath, { legacyEmbeddingModel: "legacy-model" });
+
+    expect(db.prepare("SELECT content_hash, document_version, updated_at, previous_content_hash FROM documents").all()).toEqual([
+      { content_hash: null, document_version: 1, updated_at: null, previous_content_hash: null },
+    ]);
+    // Not unique on purpose: historical duplicates must not break the migration or the backfill.
+    const index = db.prepare("PRAGMA index_list(documents)").all() as Array<{ name: string; unique: number }>;
+    expect(index.find((entry) => entry.name === "idx_documents_user_hash")).toMatchObject({ unique: 0 });
+    db.close();
+  });
+
   it("upgrades an unversioned database in place and keeps existing data", () => {
     createLegacyDatabase();
 

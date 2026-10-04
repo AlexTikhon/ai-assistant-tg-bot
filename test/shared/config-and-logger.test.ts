@@ -24,6 +24,7 @@ describe("loadConfig", () => {
       rrfK: 60,
       contextMaxChars: 6000,
       exactTokenBonus: 1,
+      confidenceMode: "shadow", // decided and logged, never applied, until calibrated on real embeddings
       confidence: { minSemanticScore: 0.5, minTermCoverage: 0.6, requireKnownIdentifiers: true },
     });
     expect(config.limits).toEqual({
@@ -157,5 +158,36 @@ describe("config sections", () => {
 
   it("loadConfig reports every problem of every section at once", () => {
     expect(() => loadConfig({ RETRIEVAL_TOP_K: "0" })).toThrow(/TELEGRAM_BOT_TOKEN[\s\S]*OPENAI_API_KEY[\s\S]*RETRIEVAL_TOP_K|RETRIEVAL_TOP_K[\s\S]*TELEGRAM_BOT_TOKEN/);
+  });
+});
+
+describe("retrieval confidence rollout mode", () => {
+  it("defaults to shadow: the gate is evaluated and logged but never changes an answer, until real-embedding calibration is done", () => {
+    const { retrieval } = loadToolConfig({});
+
+    expect(retrieval.confidenceMode).toBe("shadow");
+    expect(retrieval.confidence).toEqual(DEFAULT_CONFIDENCE_POLICY); // the policy is needed to compute the shadow decision
+  });
+
+  it.each(["off", "shadow", "enforce"] as const)("accepts RETRIEVAL_CONFIDENCE_MODE=%s", (mode) => {
+    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_MODE: mode }).retrieval.confidenceMode).toBe(mode);
+  });
+
+  it("off leaves no policy, enforce and shadow keep the thresholds", () => {
+    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_MODE: "off" }).retrieval.confidence).toBeUndefined();
+    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_MODE: "enforce", RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: "0.42" }).retrieval.confidence).toMatchObject({ minSemanticScore: 0.42 });
+  });
+
+  it("rejects an unknown mode, naming the variable", () => {
+    expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MODE: "strict" })).toThrow(/RETRIEVAL_CONFIDENCE_MODE/);
+  });
+
+  it("keeps the older RETRIEVAL_CONFIDENCE_GATE working when no mode is set: false is off, an explicit true is enforce", () => {
+    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "false" }).retrieval.confidenceMode).toBe("off");
+    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "true" }).retrieval.confidenceMode).toBe("enforce");
+  });
+
+  it("the mode wins over the older switch", () => {
+    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "false", RETRIEVAL_CONFIDENCE_MODE: "shadow" }).retrieval.confidenceMode).toBe("shadow");
   });
 });

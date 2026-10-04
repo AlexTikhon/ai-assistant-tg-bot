@@ -1,0 +1,152 @@
+import Database from "better-sqlite3";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { logger } from "../../shared/logger.js";
+import { BACKUP_FORMAT_VERSION, DATABASE_FILE, FILES_DIRECTORY, hashFile, MANIFEST_FILE } from "./manifest.js";
+import type { BackupManifest } from "./manifest.js";
+
+export type CreateBackupOptions = {
+  /** The live database connection. Read-only is enough; it is never written to. */
+  db: Database.Database;
+  /** Where the original uploads are stored. */
+  filesDir: string;
+  /** The backup directory to create. Must not exist or must be empty. */
+  outputDir: string;
+  now: () => Date;
+  applicationVersion: string;
+};
+
+const log = logger.child({ operation: "backup" });
+
+/**
+ * Writes a restorable copy of the local installation into `outputDir`:
+ *
+ *   app.db          a consistent snapshot made with SQLite's online backup API
+ *   files/<name>    the original files the snapshot refers to
+ *   manifest.json   what is in it, with hashes (written last: its presence means the backup is complete)
+ *
+ * That is all it ever writes. Configuration (.env), API keys, the bot token and logs are not part of the
+ * data directory's contents this function touches, so they cannot end up in a backup.
+ *
+ * The database is NOT copied as a file: a live database in WAL mode keeps recent commits in a separate -wal
+ * file that a plain copy would miss or tear. The backup API reads a point-in-time snapshot through SQLite
+ * itself, safely while the bot keeps writing. The files are copied afterwards for exactly the documents
+ * of that snapshot; a file that vanished in between (a deletion after the snapshot) is listed as missing.
+ *
+ * On any failure everything this call created is removed again, so a half-written backup never exists.
+ */
+export async function createBackup(options: CreateBackupOptions): Promise<BackupManifest> {
+  const { db, filesDir, outputDir } = options;
+
+  const existed = await fs.stat(outputDir).then(
+    (info) => info.isDirectory(),
+    () => false,
+  );
+  if (existed && (await fs.readdir(outputDir)).length > 0) {
+    throw new Error(`The backup directory ${outputDir} is not empty; choose a new one.`);
+  }
+
+  await fs.mkdir(path.join(outputDir, FILES_DIRECTORY), { recursive: true });
+
+  try {
+    const databasePath = path.join(outputDir, DATABASE_FILE);
+    await db.backup(databasePath);
+
+    const snapshot = readSnapshot(databasePath);
+    const files: BackupManifest["files"] = [];
+    const missingFiles: string[] = [];
+
+    for (const storedName of snapshot.storedNames) {
+      if (path.basename(storedName) !== storedName) {
+        throw new Error("Invalid stored file name");
+      }
+      const target = path.join(outputDir, FILES_DIRECTORY, storedName);
+      try {
+        await fs.copyFile(path.join(filesDir, storedName), target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          missingFiles.push(storedName);
+          continue;
+        }
+        throw error;
+      }
+      files.push({ storedName, bytes: (await fs.stat(target)).size, sha256: await hashFile(target) });
+    }
+
+    const manifest: BackupManifest = {
+      formatVersion: BACKUP_FORMAT_VERSION,
+      createdAt: options.now().toISOString(),
+      application: { name: "telegram-rag-bot", version: options.applicationVersion },
+      schemaVersion: snapshot.schemaVersion,
+      database: { file: DATABASE_FILE, bytes: (await fs.stat(databasePath)).size, sha256: await hashFile(databasePath) },
+      counts: { documents: snapshot.documents, chunks: snapshot.chunks, files: files.length },
+      files,
+      missingFiles,
+      indexProfiles: snapshot.indexProfiles,
+    };
+
+    // Last, and atomically: a directory without manifest.json is not a finished backup.
+    const manifestPath = path.join(outputDir, MANIFEST_FILE);
+    await fs.writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2));
+    await fs.rename(`${manifestPath}.tmp`, manifestPath);
+
+    log.info({ documents: manifest.counts.documents, files: files.length, missingFiles: missingFiles.length }, "Backup created");
+    return manifest;
+  } catch (error) {
+    await removeCreated(outputDir, existed);
+    throw error;
+  }
+}
+
+/** Reads the facts the manifest needs from the snapshot itself, and makes the snapshot a standalone file. */
+function readSnapshot(databasePath: string) {
+  const snapshot = new Database(databasePath);
+  try {
+    // The snapshot inherits WAL mode; a standalone file needs no -wal/-shm beside it.
+    snapshot.pragma("journal_mode = DELETE");
+
+    const schemaVersion = snapshot.pragma("user_version", { simple: true }) as number;
+    const count = (table: string) => (snapshot.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    const columns = (snapshot.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).map((column) => column.name);
+
+    const indexProfiles = columns.includes("index_fingerprint")
+      ? (snapshot.prepare("SELECT index_fingerprint AS fingerprint, index_profile AS profile, COUNT(*) AS documents FROM documents GROUP BY index_fingerprint, index_profile").all() as Array<{ fingerprint: string | null; profile: string | null; documents: number }>).map(
+          (row) => ({ fingerprint: row.fingerprint, profile: parseJson(row.profile), documents: row.documents }),
+        )
+      : [];
+
+    return {
+      schemaVersion,
+      documents: count("documents"),
+      chunks: count("document_chunks"),
+      storedNames: (snapshot.prepare("SELECT stored_name AS name FROM documents ORDER BY created_at, id").all() as Array<{ name: string }>).map((row) => row.name),
+      indexProfiles,
+    };
+  } finally {
+    snapshot.close();
+  }
+}
+
+function parseJson(text: string | null): unknown {
+  if (text === null) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Removes what this call created: the whole directory if it made it, otherwise only the contents (it was empty). */
+async function removeCreated(outputDir: string, existed: boolean) {
+  try {
+    if (!existed) {
+      await fs.rm(outputDir, { recursive: true, force: true });
+      return;
+    }
+    for (const entry of await fs.readdir(outputDir)) {
+      await fs.rm(path.join(outputDir, entry), { recursive: true, force: true });
+    }
+  } catch (err) {
+    log.warn({ err }, "Could not remove the incomplete backup");
+  }
+}

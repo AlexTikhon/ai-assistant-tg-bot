@@ -36,7 +36,7 @@ async function ingest(fileName: string, userId = "user-1", text = TEXT) {
       maxStorageBytesPerUser: 10_000_000,
       maxChunksPerDocument: 500,
     },
-  }).execute({ userId, fileName, mimeType: "text/plain", data: Buffer.from(text) });
+  }).execute({ userId, fileName, mimeType: "text/plain", data: Buffer.from(`${text}\n(${fileName})`) }); // unique per name: identical bytes are one document
   return result.documentId;
 }
 

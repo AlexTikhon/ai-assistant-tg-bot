@@ -72,9 +72,10 @@ export async function startApplication(app: Application): Promise<RunningApplica
 }
 
 /** Starts the application and shuts it down gracefully on SIGINT/SIGTERM. */
-export async function runApplication(app: Application) {
+export async function runApplication(app: Application): Promise<RunningApplication> {
   const running = await startApplication(app);
 
   process.once("SIGINT", () => void running.shutdown("SIGINT"));
   process.once("SIGTERM", () => void running.shutdown("SIGTERM"));
+  return running;
 }

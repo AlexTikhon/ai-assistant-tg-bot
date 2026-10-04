@@ -116,30 +116,44 @@ export const retrievalConfig = section(
     RETRIEVAL_CONTEXT_MAX_CHARS: positiveInt(6000),
     /** Extra rank evidence for chunks that contain an identifier/file name/version of the question verbatim. 0 turns it off. */
     RETRIEVAL_EXACT_TOKEN_BONUS: z.coerce.number().min(0).max(10).default(1),
-    /** The answerability gate: weak evidence is answered with "not enough information" instead of asking the model. */
-    RETRIEVAL_CONFIDENCE_GATE: z.enum(["true", "false"]).default("true"),
+    /**
+     * The answerability gate: weak evidence is answered with "not enough information" instead of asking the model.
+     * off = no gate; shadow = decide and log, but answer as if there were no gate; enforce = abstain on weak evidence.
+     * Shadow is the default: the 0.5 threshold was calibrated on synthetic embeddings only and has not been
+     * validated against real OpenAI embeddings, so it must not change answers until it has been observed.
+     */
+    RETRIEVAL_CONFIDENCE_MODE: z.enum(["off", "shadow", "enforce"]).optional(),
+    /** Older switch, only read when RETRIEVAL_CONFIDENCE_MODE is not set: false = off, true = enforce. */
+    RETRIEVAL_CONFIDENCE_GATE: z.enum(["true", "false"]).optional(),
     // Defaults mirror DEFAULT_CONFIDENCE_POLICY (core); a test keeps them equal. Cosine similarity is specific to the embedding model: re-calibrate (npm run eval:confidence) after changing it.
     RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: z.coerce.number().min(-1).max(1).default(0.5),
     RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: z.coerce.number().min(0).max(1).default(0.6),
   }),
-  (env) => ({
-    topK: env.RETRIEVAL_TOP_K,
-    minScore: env.MIN_SIMILARITY_SCORE,
-    semanticLimit: env.RETRIEVAL_SEMANTIC_LIMIT,
-    lexicalLimit: env.RETRIEVAL_LEXICAL_LIMIT,
-    rrfK: env.RETRIEVAL_RRF_K,
-    contextMaxChars: env.RETRIEVAL_CONTEXT_MAX_CHARS,
-    exactTokenBonus: env.RETRIEVAL_EXACT_TOKEN_BONUS,
-    // Whether identifiers must exist in the documents is a rule, not an operational knob (see core/retrieval-confidence.ts).
-    confidence:
-      env.RETRIEVAL_CONFIDENCE_GATE === "true"
-        ? {
-            minSemanticScore: env.RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE,
-            minTermCoverage: env.RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE,
-            requireKnownIdentifiers: true,
-          }
-        : undefined,
-  }),
+  (env) => {
+    const gate = env.RETRIEVAL_CONFIDENCE_GATE;
+    const confidenceMode = env.RETRIEVAL_CONFIDENCE_MODE ?? (gate === "false" ? "off" : gate === "true" ? "enforce" : "shadow");
+
+    return {
+      topK: env.RETRIEVAL_TOP_K,
+      minScore: env.MIN_SIMILARITY_SCORE,
+      semanticLimit: env.RETRIEVAL_SEMANTIC_LIMIT,
+      lexicalLimit: env.RETRIEVAL_LEXICAL_LIMIT,
+      rrfK: env.RETRIEVAL_RRF_K,
+      contextMaxChars: env.RETRIEVAL_CONTEXT_MAX_CHARS,
+      exactTokenBonus: env.RETRIEVAL_EXACT_TOKEN_BONUS,
+      confidenceMode,
+      // Whether identifiers must exist in the documents is a rule, not an operational knob (see core/retrieval-confidence.ts).
+      // Kept in shadow mode too: it is what the shadow decision is computed with. Absent only when the gate is off.
+      confidence:
+        confidenceMode !== "off"
+          ? {
+              minSemanticScore: env.RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE,
+              minTermCoverage: env.RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE,
+              requireKnownIdentifiers: true,
+            }
+          : undefined,
+    };
+  },
 );
 
 export const limitsConfig = section(
@@ -170,8 +184,8 @@ export const telegramConfig = section(
 );
 
 export const diagnosticsConfig = section(
-  z.object({ LOG_QUESTIONS: booleanFlag, RAG_DEBUG: booleanFlag }),
-  (env) => ({ logQuestions: env.LOG_QUESTIONS, ragDebug: env.RAG_DEBUG }),
+  z.object({ LOG_QUESTIONS: booleanFlag, RAG_DEBUG: booleanFlag, FEEDBACK_BUTTONS: booleanFlag }),
+  (env) => ({ logQuestions: env.LOG_QUESTIONS, ragDebug: env.RAG_DEBUG, feedbackButtons: env.FEEDBACK_BUTTONS }),
 );
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -246,5 +260,6 @@ export function loadConfig(source: EnvSource = process.env) {
     rateLimit: sections.telegram.value.rateLimit,
     logQuestions: sections.diagnostics.value.logQuestions,
     ragDebug: sections.diagnostics.value.ragDebug,
+    feedbackButtons: sections.diagnostics.value.feedbackButtons,
   } as const;
 }

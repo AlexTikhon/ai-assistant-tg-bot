@@ -274,7 +274,7 @@ describe("re-chunking and provenance", () => {
     );
     expect(paths).toContain("Authentication > Refresh tokens");
     expect(paths.filter(Boolean).length).toBeGreaterThan(0);
-    expect((await profileOf(id))?.extractorVersion).toBe("markdown-sections-v1");
+    expect((await profileOf(id))?.extractorVersion).toBe("markdown-sections-v2");
   });
 
   it("keeps page provenance for PDFs and gives them no section path", async () => {
@@ -288,5 +288,32 @@ describe("re-chunking and provenance", () => {
       p: string | null;
     }>;
     expect(rows.every((row) => row.s !== null && row.e !== null && row.p === null)).toBe(true);
+  });
+});
+
+describe("RechunkDocumentUseCase records when the index was rebuilt", () => {
+  it("sets the document's updatedAt and keeps its identity", async () => {
+    const ingest = new IngestDocumentUseCase({
+      documents: stores.documents,
+      files,
+      extractor: new Utf8Extractor(),
+      embeddings: new KeywordEmbeddings(),
+      options: { maxUploadBytes: 100_000, chunkSize: 200, chunkOverlap: 20, maxDocumentsPerUser: 10, maxStorageBytesPerUser: 1_000_000, maxChunksPerDocument: 100 },
+    });
+    const created = await ingest.execute({ userId: "user-1", fileName: "a.txt", mimeType: "text/plain", data: Buffer.from("The cat sleeps all day. ".repeat(20)) });
+    const before = await stores.documents.findById("user-1", created.documentId);
+    expect(before?.updatedAt).toBeNull();
+
+    await new RechunkDocumentUseCase({
+      documents: stores.documents,
+      files,
+      extractor: new Utf8Extractor(),
+      embeddings: new KeywordEmbeddings(),
+      options: { chunkSize: 100, chunkOverlap: 10, maxChunksPerDocument: 100 },
+    }).execute("user-1", created.documentId);
+
+    const after = await stores.documents.findById("user-1", created.documentId);
+    expect(after?.updatedAt).not.toBeNull();
+    expect(after).toMatchObject({ contentHash: before?.contentHash, documentVersion: 1 });
   });
 });

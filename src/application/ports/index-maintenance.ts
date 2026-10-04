@@ -13,6 +13,8 @@ export type IndexedDocument = {
   chunkCount: number;
   /** Chunks whose vector is from another model, unreadable, or of an unexpected dimension. */
   staleChunkCount: number;
+  /** Chunks whose vector cannot be decoded at all (a subset of the stale ones): corruption, not "another model". */
+  unreadableChunkCount: number;
   /**
    * How the document was indexed. The embedding fields always describe the vectors that search really
    * uses (read from the chunks). For documents indexed before recipes were recorded, chunk size and
@@ -23,8 +25,9 @@ export type IndexedDocument = {
 
 /**
  * Operator view of the index across all users. Only for maintenance tasks (re-indexing, startup
- * diagnostics) - request handling never uses it, so user isolation of normal queries is unaffected.
+ * diagnostics) - question answering never uses it, so user isolation of normal queries is unaffected.
+ * With `scope.userId` the view is limited to one user's documents (what /list shows that user).
  */
 export interface IndexMaintenance {
-  listIndexedDocuments(target: EmbeddingTarget): Promise<IndexedDocument[]>;
+  listIndexedDocuments(target: EmbeddingTarget, scope?: { userId: string }): Promise<IndexedDocument[]>;
 }

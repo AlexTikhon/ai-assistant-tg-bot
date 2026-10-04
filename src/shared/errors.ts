@@ -29,6 +29,17 @@ export class NotFoundError extends AppError {
   }
 }
 
+/** The application cannot start: which stage failed ("database": open/migrate, "storage": the data directory). */
+export class StartupError extends Error {
+  constructor(
+    readonly stage: "database" | "storage",
+    cause: unknown,
+  ) {
+    super(`Startup failed at the ${stage} stage: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "StartupError";
+  }
+}
+
 /** An upstream provider (OpenAI, Telegram file API) failed, timed out or answered garbage. */
 export class ExternalServiceError extends AppError {
   constructor(

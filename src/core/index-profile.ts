@@ -9,8 +9,11 @@ export const CHUNKING_ALGORITHM_VERSION = 1;
 
 /** Extraction recipes per file kind. Bump the one whose output (text or page/section information) changes. */
 export const TEXT_EXTRACTOR_VERSION = "text-v1";
-/** Markdown: the same text as plain text, plus the heading hierarchy (section path) of every chunk. */
-export const MARKDOWN_EXTRACTOR_VERSION = "markdown-sections-v1";
+/**
+ * Markdown: the same text as plain text, plus the heading hierarchy (section path) of every chunk. v2 recognises
+ * Setext headings ("Title" underlined with === or ---) in addition to "#" headings and skips YAML front matter.
+ */
+export const MARKDOWN_EXTRACTOR_VERSION = "markdown-sections-v2";
 /** PDF text with per-page provenance and without pdf-parse's "-- n of m --" page markers. */
 export const PDF_EXTRACTOR_VERSION = "pdf-pages-v2";
 /** What PDFs were indexed with before pages were tracked; only ever read from legacy rows. */

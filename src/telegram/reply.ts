@@ -41,9 +41,10 @@ export function splitMessage(text: string, limit = MAX_MESSAGE_LENGTH): string[]
   return parts;
 }
 
-/** Replies with plain text, split across as many messages as needed. */
-export async function replyLongText(ctx: Context, text: string) {
-  for (const part of splitMessage(text)) {
-    await ctx.reply(part);
+/** Replies with plain text, split across as many messages as needed. `extra` (e.g. an inline keyboard) goes on the last part only. */
+export async function replyLongText(ctx: Context, text: string, extra?: Parameters<Context["reply"]>[1]) {
+  const parts = splitMessage(text);
+  for (const [index, part] of parts.entries()) {
+    await (index === parts.length - 1 && extra ? ctx.reply(part, extra) : ctx.reply(part));
   }
 }

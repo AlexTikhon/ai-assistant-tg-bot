@@ -39,34 +39,43 @@ flowchart LR
 
 ```text
 src/
-  index.ts              entry point of the bot: load config, build the app, run it
-  composition-root.ts   creates adapters once and injects them (bot + the reindex tool)
+  index.ts              entry point of the bot (a few lines: startBot with the real dependencies)
+  startup.ts            the logged start stages (config, database, storage, Telegram) and what happens when one fails
+  composition-root.ts   creates adapters once and injects them (bot + the reindex, integrity tools)
   lifecycle.ts          start polling, graceful shutdown (SIGINT/SIGTERM)
-  cli/                  command-line tools: reindex, eval-retrieval (also eval:confidence), eval-diff, bench-retrieval
+  cli/                  command-line tools: reindex, integrity, backup, backup-verify, eval-retrieval (also eval:confidence), eval-diff, bench-retrieval
   config/               environment parsing in independent sections (zod); each command loads only what it needs
   core/                 pure logic, no I/O: types, text splitter (with offsets), page + Markdown-section provenance,
                         index profile, cosine similarity + vector codec, rank fusion (RRF) + exact-token bonus,
-                        technical-token detection, retrieval signals + confidence gate, context selection,
-                        chunk-overlap trimming, FTS query builder, citation checks and formatting
+                        technical-token detection, retrieval signals + confidence gate (+ rollout modes), context selection,
+                        chunk-overlap trimming, FTS query builder, citation checks and formatting, content hash,
+                        index health, storage layout (temporary / orphan files), embedding batch size
   application/
     hybrid-retriever.ts query embedding -> semantic + lexical search -> RRF -> load -> exact-token bonus
                         -> evidence signals -> confidence gate -> context selection
     prepare-index.ts    extract -> split -> provenance -> embed (shared by ingestion and re-chunking)
     assess-index.ts     compares a document's recorded recipe with the configured one
-    ports/              DocumentRepository, VectorStore, IndexMaintenance, FileStorage, ChatModel,
-                        EmbeddingsProvider, SpeechToText, DocumentTextExtractor
+    ports/              DocumentRepository, VectorStore, IndexMaintenance, IntegrityStore, FileStorage, FeedbackStore,
+                        AnswerOutcomes, ChatModel, EmbeddingsProvider, SpeechToText, DocumentTextExtractor
     prompts/            chat messages (system / user roles) for answering and summarizing
-    use-cases/          ingest, answer, list, summarize, delete, reindex (re-embed), rechunk, run-reindex
-    check-index-compatibility.ts   startup diagnostic for stale indexes
+    use-cases/          ingest, replace, answer, list, get (/doc), summarize, delete, reindex (re-embed), rechunk,
+                        run-reindex, inspect-integrity, repair-integrity, record-feedback
+    find-document-by-content.ts  duplicate lookup by content hash (with the lazy backfill of historical documents)
+    describe-document-index.ts   index health of one existing document, from its record and chunk count
+    document-overview.ts         health of a user's documents for /list and /doc
+    check-index-compatibility.ts, startup-check.ts   the cheap startup diagnostics
   infrastructure/
-    sqlite/             connection, migrations, repository, vector store (vectors + FTS5), index maintenance
-    storage/            local file storage
+    sqlite/             connection (+ read-only open), migrations, repository, vector store (vectors + FTS5), index maintenance,
+                        integrity store, feedback store
+    storage/            local file storage (atomic writes, temporary files)
+    backup/             manifest, create-backup (SQLite online backup), verify-backup
+    memory/             the bounded in-memory journal of answer outcomes
     openai/             chat model, embeddings, speech-to-text adapters
     documents/          PDF (per page) / MD / TXT text extraction
   eval/                 evaluation: metrics, answerability, calibration, dataset, harness, runner, comparison,
                         baseline, report, export, diff, live-run plan, benchmark
   telegram/             bot factory, routing, handlers, middleware (errors, rate limit), downloads, UI text
-  shared/               logger, errors, rate limiter, keyed mutex, small utilities
+  shared/               logger (+ request ids), errors, rate limiter, keyed mutex, bounded retry, small utilities
 eval/                   fixture corpus, questions (JSONL, versioned), comparison grids, baseline minimums, offline embedding lexicon
 docs/                   this file, rag.md, evaluation.md
 test/                   Vitest suites using fakes for the ports and in-memory SQLite
@@ -76,38 +85,162 @@ test/                   Vitest suites using fakes for the ports and in-memory SQ
 
 ## Request flow
 
-1. Telegraf receives an update; `requestLogger` and `errorBoundary` middleware wrap every handler.
+1. Telegraf receives an update; `requestContext` gives it a short opaque request id (8 random hex characters, never derived from user content) that the logger adds to every line logged while it is handled - handler, retrieval, generation, ingestion, feedback. `requestLogger` and `errorBoundary` wrap every handler.
 2. Handlers that call OpenAI (`/ask`, plain text, `/summary`, uploads, voice) first pass the per-user rate limit.
 3. A handler reads Telegram specifics (user id, command arguments, file ids), calls one use case, and formats the result as plain text, split into several messages if it exceeds Telegram's limit.
 4. `errorBoundary` replies with the message of an `AppError` (written for users) or a generic message for anything unexpected. Technical details are logged, never sent.
 
-## Ingestion flow
+## Document lifecycle
 
-```mermaid
-flowchart TD
-  L[per-user lock] --> Q[quota check: documents, stored bytes]
-  Q --> A[validate: type, non-empty, size]
-  A --> B[extract text - PDF: per page]
-  B --> C[normalize + split into chunks, remember each chunk's pages / Markdown section]
-  C --> K[chunk count limit]
-  K --> D[embed chunks]
-  D --> E[validate vectors: count, dimension, finite]
-  E --> F[save original file]
-  F --> G[(SQLite transaction: document + index profile + chunks + FTS index)]
-  G -- fails --> H[delete the saved file]
+```text
+Upload
+  |
+hash (SHA-256 of the file's bytes, per user)
+  |
+duplicate? -- yes --> already-exists: the existing document, nothing extracted, embedded or stored
+  |
+  no
+  |
+quota -> extract -> chunk -> embed -> validate
+                                |
+                             persist (file, then one SQLite transaction)
+                                |
+                             indexed (created)
+
+
+Replacement (/replace <id>, deliberately, by id):
+
+old valid index
+      |
+prepare new index (extract, chunk, embed, validate)
+      |
+ success?
+  |       |
+ no      yes
+  |       |
+keep    write new file -> atomic swap (row + all chunks, one transaction)
+old                            |
+                          delete the old file (failure: logged, leaves an orphan)
 ```
 
-Everything that can fail without side effects happens first, and limits are checked before any paid embedding call. The file is only written after embeddings succeeded, document and chunks are saved atomically (the full-text index is updated by triggers in the same transaction), and the file is removed again if that last step fails. A failed upload leaves no orphan file, no document without chunks and no chunks without a document. Uploads of one user run one after another so two simultaneous uploads cannot both slip under a quota.
+**Identity.** A document's identity is the SHA-256 of its original bytes (`documents.content_hash`), looked up only among the *uploading user's* documents - another user's documents are never consulted, so nothing about them (existence, ownership, content) can be learned from an upload. A hash is never an authorization and never shown to a normal user. Two files with different names but identical bytes are one document; the same name with different bytes are two.
+
+| Situation | Result | Effect |
+| --- | --- | --- |
+| same user, same bytes | `already-exists` | no extraction, no embedding call, no rows; quota is not consulted. Replies with the existing document (its own name), and says if its index is outdated or unusable. If the document's original file had gone missing, the upload writes it again and points the document at it (`restoredOriginal`) - still without re-indexing |
+| same user, same name, other bytes | `created` | a second document with its own id; `/list` tells them apart by id, size and date |
+| other user, same bytes | `created` | independent copy; no cross-user shortcut |
+| `/replace <id>`, same bytes, index current | `already-exists` | nothing to do |
+| `/replace <id>`, same bytes, index unusable | `replaced` | an explicit rebuild of that document |
+| `/replace <id>`, bytes already stored as *another* document of the user | error naming that document | never creates two documents with one content |
+| `/replace <id>` of someone else's / unknown id | "Document not found." | before anything is read, extracted, embedded or stored |
+
+The ingestion result is a union: `created`, `already-exists` (with the index health of the existing document), and `replaced` (from the replace use case); Telegram decides how to word each. Uniqueness of `(user_id, content_hash)` is deliberately **not** a database constraint: historical duplicates are legitimate data, and a unique index would make the hash backfill and the migration fail on them. It is enforced by the use cases (serialized per user, one lock shared by ingest, replace and delete) and reported by `npm run integrity` (`duplicate-content`).
+
+**Historical documents** (stored before hashes existed) have an unknown hash (`NULL`, never invented). On an upload, only that user's unhashed documents *of the same size* are read once and hashed - the hash is then persisted, so no file is read twice - and a missing file merely leaves the hash unknown. `npm run integrity -- --repair` backfills the rest.
+
+**Replacement** is `/replace <documentId>` plus a file: since Telegram commands cannot carry a file, the file is sent *with the caption* `/replace <documentId>` (no conversation state to expire; a plain `/replace` explains this). The document keeps its id, owner and creation time, so citations and `/summary` links remain valid; its cached summary is cleared (it described the old content), the file name becomes the new upload's name, `document_version` increases, `previous_content_hash` keeps the hash before the swap and `updated_at` records the time. No history of older versions is kept.
+
+```text
+documents: content_hash  document_version  updated_at  previous_content_hash   (index_profile says what produced the chunks)
+```
+
+## Failure semantics: files and SQLite
+
+SQLite cannot roll back a file write, so every workflow that crosses both uses one ordering - *prepare, commit the database, finalize the file, compensate if the commit fails* - and the database always wins:
+
+| Workflow | Prepare (reads / paid work only) | Commit | Finalize | If the commit fails | If finalizing fails |
+| --- | --- | --- | --- | --- | --- |
+| ingest | validate, hash, extract, split, embed | write file, then one transaction (document + chunks + FTS) | - | delete the new file | - |
+| replace | ownership, validate, hash, extract, split, embed | write new file, then one transaction swapping row + all chunks | delete the old file | delete the new file; the old document is untouched | log; the old file is an orphan (`integrity` reports it) |
+| delete | ownership | delete the row (chunks cascade) | delete the file | nothing was changed | log; orphan file |
+| re-chunk | read file, extract, split, embed | one transaction swapping all chunks + profile | - | old index untouched | - |
+| restore a lost original (duplicate upload) | find the document by hash, `stat` the file | write the file, then update `stored_name` | - | delete the file just written; the upload is still reported as a duplicate | - |
+| repair | inspect | only deterministic, free steps | - | reported as failed, the others still run | - |
+
+A crash between "write file" and "commit" can only leave an *unreferenced* file, never a row without its file; `save` writes `.tmp-<uuid>-<name>.part` and renames it, so even a crash mid-write leaves a recognisable temporary file instead of a truncated document. Failed work is never visible to users: the previous document and index stay usable until the new ones fully exist. Compensation failures are logged and never replace the original error.
+
+## Index health
+
+Health is **derived**, never stored (`src/core/index-health.ts`, pure), from the recorded profile, the chunks and the file system:
+
+| State | Meaning | What questions do with it |
+| --- | --- | --- |
+| `current` | recipe matches the configuration, vectors readable, file present | everything |
+| `embedding-stale` | other embedding model / dimension | semantic search skips these vectors (never compares incompatible ones); keyword search still finds the text |
+| `chunking-stale` | other chunk size / overlap / algorithm | searchable as before (the index is internally consistent) |
+| `extractor-stale` | older extraction (PDF without pages, Markdown without sections / Setext) | searchable; citations fall back to what the old index knows |
+| `corrupt-index` | some vectors cannot be decoded | those chunks are skipped by semantic search (warned about), their text is still searchable by keyword |
+| `missing-file` | the original is gone from storage | chunks stay searchable; re-chunk / re-extract is impossible until the file is restored |
+| `unindexed` | no chunks | nothing to find |
+
+Answering never repairs anything: it makes one query-embedding call and no write, whatever the state (a test pins this). Fixing a stale index is always an explicit, paid operator action (`npm run reindex`), never automatic. `/list` and `/doc` show the state in plain words (`ready`, `index outdated`, `partly unreadable`, `original file missing`, `not searchable`) and never hashes, fingerprints or dimensions.
+
+## Integrity, repair and cleanup
+
+`npm run integrity` is a **read-only** deep check: the database is opened with SQLite's read-only flag and is not migrated (an older schema is refused with a hint), so even a bug cannot write. It reports, per problem, what is wrong and the command that fixes it:
+
+`missing-file`, `unreadable-file`, `file-size-mismatch`, `content-hash-mismatch` (reads every file; `--skip-hashes` for speed), `unknown-content-hash`, `duplicate-content`, `orphan-file`, `temporary-file`, `no-chunks`, `unreadable-embedding`, `mixed-dimensions`, `chunk-index-gap`, `foreign-chunk`, `orphan-chunks`, `fts-mismatch`, `database-corrupt` (SQLite's own checks) and `stale-index` - with a summary of how many documents need `npm run reindex` (re-embed) versus `npm run reindex -- --rechunk`. A Markdown document that predates section-aware extraction is named as such. The exit code is 1 when errors remain.
+
+`npm run integrity -- --repair` applies only deterministic repairs that lose nothing and cost nothing, and prints exactly what it changed: rebuild the full-text index, record a missing content hash from the present original, delete **stale** temporary files (older than one hour, so a running upload is safe). `--remove-orphans` (with `--repair`) additionally deletes unreferenced stored files older than 24 hours. It never deletes documents or chunks, never regenerates embeddings, never replaces files, never guesses ownership and has no embeddings provider (an architecture test checks that the integrity, repair and backup code imports none).
+
+Files in storage are classified by `src/core/storage-layout.ts` (pure, clock injected): **referenced** (a row points to it), **temporary** (`.tmp-*.part`, a write in progress or interrupted), **orphan** (no row). Age limits keep work in flight safe.
+
+## Backup
+
+```bash
+npm run backup -- --output ./backups/before-upgrade     # default: ./backups/bot-backup-<UTC timestamp>
+npm run backup:verify -- ./backups/before-upgrade
+```
+
+A backup is a directory: `app.db`, `files/<stored name>` (every original the snapshot refers to) and `manifest.json` (format version, schema version, counts, index profiles in use, size and SHA-256 of everything), written last - a directory without a manifest is not a finished backup, and a failed backup removes what it created. It never contains `.env`, API keys, the bot token or logs (it writes nothing but these three kinds of files; a test plants secrets and searches the output).
+
+**Consistency.** The database is not copied as a file: in WAL mode recent commits live in a separate `-wal` file that a plain copy would miss or tear. The backup uses better-sqlite3's `db.backup()` (SQLite's online backup API), a point-in-time snapshot taken through SQLite itself, safe while the bot keeps writing (a test writes during the backup and checks that documents, chunks and the full-text index still agree). The snapshot is then made standalone (`journal_mode = DELETE`). The originals are copied afterwards for exactly the documents of that snapshot; a file deleted in between is listed in the manifest as missing.
+
+`backup:verify` is read-only: manifest valid, database and every file match the recorded size and SHA-256, the database opens read-only and passes SQLite's structural check, every document's file is present (or recorded as already missing), recorded content hashes agree with the files, and the checks of `npm run integrity` run on the copy. Exit code 1 on any problem.
+
+**Restore** is deliberately manual (no destructive command): stop the bot, copy `app.db` and `files/` into a *new, empty* data directory, run `npm run integrity` against it (`DATA_DIR=...`), then start the bot, which migrates an older schema.
+
+## Startup
+
+`startBot` logs the stages separately and stops at the first failure with a non-zero exit code: **config** (invalid configuration: nothing is created), **database** (open + migrate; a failed migration never reaches polling), **storage** (the data directory must be readable and writable), the cheap **startup check**, then **telegram** (command menu sync + polling start; on failure the database is closed). Nothing logs the configuration, the token or the key. The startup check logs counts only - documents, outdated indexes, missing originals, stale temporary files, orphan files - and points to `npm run integrity` for details; it never reads file contents, repairs or calls a provider, and a failing check never blocks the start.
+
+## External calls
+
+| Call | Retry | Why |
+| --- | --- | --- |
+| OpenAI embeddings and chat | SDK `maxRetries: 2` (429, 5xx, connection errors, honours `Retry-After`; never 4xx) | already bounded inside the client; wrapping it again would multiply paid calls |
+| OpenAI speech-to-text | `withRetry`: 3 attempts, exponential backoff + jitter, `Retry-After` honoured (up to 10 s), abortable | a transcription is a pure function of the audio |
+| Telegram file API / download | the same `withRetry` | idempotent, and the user has not been answered yet, so no duplicate reply |
+
+Retried: 429, 408, 5xx (except 501/505), network resets and timeouts. Never retried: 400/401/403/404/413/422, a caller's abort, validation errors, anything unknown. **Embedding batches:** the LangChain client already batches in order and all-or-nothing (one failed batch fails the whole call, so a partial index cannot exist); the count is validated afterwards. The batch size is now set from the chunk size (`embeddingBatchSize`: at most 512 inputs, and few enough that one request stays under 250 000 tokens even if every character were a token) because the default 512 inputs of token-dense text (CJK) can exceed the provider's per-request token cap; for the default chunk size of 1000 characters a 2000-chunk document takes 8 requests instead of 4.
+
+**Call counts, not prices.** Logs carry the number of provider calls an operation cost: ingestion and re-chunking `chunks` and `embeddingRequests`; a question `calls: { embedding, chat }` (an abstention is `chat: 0`); a summary `generationCalls`. No money is computed - prices are not configured.
+
+## Database constraints (reviewed)
+
+| Rule | Mechanism |
+| --- | --- |
+| a chunk belongs to an existing document; deleting a document removes its chunks and index entries | foreign key `ON DELETE CASCADE` (enabled on every connection) + FTS triggers |
+| one chunk per position and per id | `UNIQUE (document_id, chunk_index)`, `UNIQUE (id)` |
+| every document has an owner and a stored name | `NOT NULL` |
+| full-text index follows the chunks | insert / update / delete triggers (checked by `integrity` against `chunk_fts_docsize`) |
+| duplicate content per user | non-unique index `(user_id, content_hash)` for lookup; the rule is in the use cases (see above) |
+| a chunk's owner equals its document's owner | not a constraint (it needs a composite key and a table rebuild); every write derives it from the document, and `integrity` reports `foreign-chunk` |
+| feedback: one rating per user and answer, `good`/`bad` | `UNIQUE (request_id, user_id)`, `CHECK` |
+
+`test/infrastructure/schema-constraints.test.ts` pins these.
 
 ## Storage
 
-- Files: `<DATA_DIR>/files/<uuid>-<sanitized name>`; database: `<DATA_DIR>/app.db` (SQLite, WAL, foreign keys on).
+- Files: `<DATA_DIR>/files/<uuid>-<sanitized name>` (writes go through `.tmp-<uuid>-<name>.part` and a rename); database: `<DATA_DIR>/app.db` (SQLite, WAL, foreign keys on).
 
 | Table | Purpose |
 | --- | --- |
-| `documents` | One row per upload: owner, names, sizes, cached summary, `index_profile` (JSON) and `index_fingerprint` |
+| `documents` | One row per upload: owner, names, sizes, cached summary, `index_profile` (JSON) and `index_fingerprint`, `content_hash` (SHA-256, `NULL` = unknown), `document_version`, `updated_at`, `previous_content_hash` |
 | `document_chunks` | Chunk text, embedding (float32 BLOB), `embedding_model`, `embedding_dim`, optional provenance (`page_start` / `page_end`, `page_label_start` / `page_label_end`, `section_path` as a JSON list of headings); stable integer key `seq`; `UNIQUE (document_id, chunk_index)`; `ON DELETE CASCADE` |
 | `chunk_fts` | FTS5 external-content index over `document_chunks.content` (`unicode61`, diacritics folded), kept in sync by triggers |
+| `answer_feedback` | Optional thumbs-up/down: request id, user, rating, and the confidence decision of that answer (labels and one number - no text) |
 
 Migrations use `PRAGMA user_version` (`src/infrastructure/sqlite/migrations.ts`); each runs in its own transaction; a database written by a newer version is refused.
 
@@ -119,6 +252,8 @@ Migrations use `PRAGMA user_version` (`src/infrastructure/sqlite/migrations.ts`)
 | 4 | `chunk_fts` FTS5 index + sync triggers; existing chunks are indexed during the migration |
 | 5 | `documents.index_profile` / `index_fingerprint`, `document_chunks.page_start` / `page_end` (columns only, no data rewritten) |
 | 6 | `document_chunks.section_path`, `page_label_start`, `page_label_end` - nullable, **no data rewritten**: older chunks have no section or label until their document is re-chunked, and a reader never invents one |
+| 7 | `documents.content_hash` (unknown for existing rows), `document_version` (1), `updated_at`, `previous_content_hash`; non-unique index `(user_id, content_hash)` - **no data rewritten, no file read** |
+| 8 | `answer_feedback` table |
 
 **Vector BLOB format** (`src/core/vectors.ts`): the IEEE-754 binary32 value of every dimension, 4 bytes each, **little-endian**, no header; the dimension is in `embedding_dim`. Values that do not fit float32 are rejected like `NaN`/`Infinity`. Scanning float32 blobs instead of JSON text cut a 5000 x 1536 scan from ~264 ms to ~46-75 ms and vectors are ~5x smaller. The scan is still brute force over the user's chunks - fine for thousands of chunks; the `VectorStore` port is the seam for an ANN index later.
 
@@ -131,7 +266,7 @@ Every document stores the **recipe it was indexed with** (`src/core/index-profil
 | `embeddingModel`, `embeddingDimension` | `OPENAI_EMBEDDINGS_MODEL` changes |
 | `chunkSize`, `chunkOverlap` | `CHUNK_SIZE` / `CHUNK_OVERLAP` change |
 | `chunkingVersion` | `splitText` behaves differently (a constant; bump it with the change) |
-| `extractorVersion` | extraction output changes - per file type: `text-v1`, `markdown-sections-v1`, `pdf-pages-v2` |
+| `extractorVersion` | extraction output changes - per file type: `text-v1`, `markdown-sections-v2` (ATX + Setext headings, front matter skipped), `pdf-pages-v2` |
 
 Query-time settings (`RETRIEVAL_*`, `MIN_SIMILARITY_SCORE`) are not part of it: they can change at any time without making stored data stale.
 
@@ -159,11 +294,11 @@ Documents are processed one at a time; one failure is recorded and the run conti
 | --- | --- | --- |
 | `MAX_DOCUMENTS_PER_USER` | 100 | Upload rejected with a clear message before any extraction or embedding |
 | `MAX_STORAGE_BYTES_PER_USER` | 200 MB | Sum of a user's original file sizes plus the new file |
-| `MAX_CHUNKS_PER_DOCUMENT` | 2000 | Checked after splitting, before paying for embeddings; also applies when re-chunking |
+| `MAX_CHUNKS_PER_DOCUMENT` | 2000 | Checked after splitting, before paying for embeddings; also applies when re-chunking and replacing |
 | `RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_MS` | 10 per 60 s | Sliding window per Telegram user, in memory, for questions, summaries, uploads and voice messages |
 
 The rate limiter is in memory and per process on purpose (single-process long-polling bot, no Redis); it sits behind a small boundary (`src/shared/rate-limiter.ts`, injectable clock). Ingestion of one user is serialized; summaries are computed once per document at a time; everything else relies on SQLite transactions.
 
 ## Observability
 
-Every question logs one concise structured line: selected chunk count, stage timings and total duration. An abstained question logs `Question not answered: insufficient evidence` with the reason and the evidence numbers (no text). Logs never contain document text, embeddings, keys or tokens; the question itself only with `LOG_QUESTIONS=true`. With `RAG_DEBUG=true` each answered question also logs candidate counts, selected chunk ids with `semanticRank` / `lexicalRank` / fused rank, why candidates were skipped, the confidence decision with its signals, and the context size - ids and numbers only.
+Every line logged while an update is handled carries its `requestId` (8 hex characters, random) so one update can be followed through handler, retrieval, generation, ingestion and feedback. Every question logs one concise structured line: selected chunk count, stage timings and total duration. An abstained question logs `Question not answered: insufficient evidence` with the reason and the evidence numbers (no text). Logs never contain document text, embeddings, keys or tokens; the question itself only with `LOG_QUESTIONS=true`. With `RAG_DEBUG=true` each answered question also logs candidate counts, selected chunk ids with `semanticRank` / `lexicalRank` / fused rank, why candidates were skipped, the confidence decision with its signals, and the context size - ids and numbers only.

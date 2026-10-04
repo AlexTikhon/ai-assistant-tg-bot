@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { MARKDOWN_EXTRACTOR_VERSION } from "../core/index-profile.js";
 import type { StaleReason } from "../core/index-profile.js";
 import type {
   ReindexAction,
@@ -105,11 +106,55 @@ function formatReasons(reasons: StaleReason[]) {
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
+/** Which workflow a stale document needs: a different chunk layout or extraction needs a re-chunk (which also re-embeds); only outdated vectors need a re-embed. */
+function needsOf(reasons: StaleReason[]): ReindexAction {
+  return reasons.some((reason) => reason.kind === "chunking" || reason.kind === "extractor") ? "rechunk" : "reembed";
+}
+
+const NEEDS_COMMAND: Record<ReindexAction, string> = {
+  reembed: "needs re-embed: npm run reindex",
+  rechunk: "needs re-chunk: npm run reindex -- --rechunk",
+};
+
+/** A Markdown document whose recipe predates section-aware extraction: it works, but cites chunk numbers instead of sections. */
+function predatesMarkdownSections(document: ReindexReport["stale"][number]) {
+  return (
+    document.fileName.toLowerCase().endsWith(".md") &&
+    document.reasons.some((reason) => reason.field === "extractorVersion" && reason.to === MARKDOWN_EXTRACTOR_VERSION)
+  );
+}
+
 function formatStaleDocuments(report: ReindexReport) {
   return report.stale.flatMap((document) => {
     const outcome = document.action ? PLANNED[document.action] : "not changed by this run (add --rechunk)";
-    return [`${document.fileName} (${document.documentId})`, ...formatReasons(document.reasons), `  -> ${outcome}`, ""];
+    const note = predatesMarkdownSections(document)
+      ? ["  Markdown section citations: indexed before section-aware extraction; it still answers questions but cites chunk numbers - a re-chunk adds the sections"]
+      : [];
+    return [
+      `${document.fileName} (${document.documentId})`,
+      ...formatReasons(document.reasons),
+      ...note,
+      `  -> ${outcome}`,
+      `  ${NEEDS_COMMAND[needsOf(document.reasons)]}`,
+      "",
+    ];
   });
+}
+
+/** What to run next, per kind of staleness. Only for dry runs: a real run already did what it was asked. */
+function formatNextSteps(report: ReindexReport) {
+  const rechunk = report.stale.filter((document) => needsOf(document.reasons) === "rechunk").length;
+  const reembed = report.stale.length - rechunk;
+  if (report.stale.length === 0) {
+    return [];
+  }
+
+  return [
+    "Next steps (this dry run changed nothing; each of these calls the OpenAI embeddings API):",
+    ...(reembed > 0 ? [`  ${plural(reembed, "document needs", "documents need")} re-embedding: npm run reindex`] : []),
+    ...(rechunk > 0 ? [`  ${plural(rechunk, "document needs", "documents need")} re-chunking: npm run reindex -- --rechunk`] : []),
+    "",
+  ];
 }
 
 function formatSummary(report: ReindexReport) {
@@ -133,7 +178,7 @@ export function formatReport(report: ReindexReport) {
   const lines: string[] = [];
 
   if (report.dryRun) {
-    lines.push(...formatStaleDocuments(report), ...formatSummary(report), "");
+    lines.push(...formatStaleDocuments(report), ...formatSummary(report), "", ...formatNextSteps(report));
   }
 
   if (report.documents === 0) {

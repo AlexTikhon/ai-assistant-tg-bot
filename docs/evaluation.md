@@ -96,7 +96,7 @@ Misclassified: wrongly refused - `paraphrase-money-back` (calibration; "How can 
 
 **The gate is a filter, not a verdict.** It removes the clear cases (unrelated questions, absent identifiers, nothing relevant) *before* paying for generation; the system prompt still tells the model to say when the excerpts are insufficient. Do not expect it to catch every unanswerable question.
 
-**Transfer to real embeddings is unverified.** Cosine similarities are specific to an embedding model. The 0.5 threshold was calibrated against the synthetic embedder; with `text-embedding-3-small` the right value may be lower. Re-run the calibration with a live run (below) before relying on the threshold, or lower it / switch the gate off (`RETRIEVAL_CONFIDENCE_GATE=false`) if valid questions are refused. The identifier and exact-token rules do not depend on the embedding scale.
+**Transfer to real embeddings is unverified.** Cosine similarities are specific to an embedding model. The 0.5 threshold was calibrated against the synthetic embedder; with `text-embedding-3-small` the right value may be lower. That is why the bot ships with the gate in **shadow** mode (`RETRIEVAL_CONFIDENCE_MODE=shadow`): the decision is logged for every question but never applied - see [Rolling out the gate](rag.md#rolling-out-the-gate). Re-run the calibration with a live run (below) and read the shadow log (or the optional feedback buttons) before switching to `enforce`; use `off` to disable the gate completely. The identifier and exact-token rules do not depend on the embedding scale. The mode is an operating setting, not an evaluation setting: `eval:*` always measures the gate itself.
 
 ## Ranking experiments
 

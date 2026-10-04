@@ -46,14 +46,23 @@ export class RechunkDocumentUseCase {
       options,
     );
 
+    const rebuiltAt = new Date().toISOString();
     await documents.replaceChunks(userId, documentId, {
-      chunks: toChunkRecords(prepared, { documentId, userId, createdAt: new Date().toISOString() }),
+      chunks: toChunkRecords(prepared, { documentId, userId, createdAt: rebuiltAt }),
       indexProfile: prepared.profile,
       textLength: prepared.textLength,
+      updatedAt: rebuiltAt,
     });
 
     log.info(
-      { userId, documentId, chunks: prepared.chunks.length, chunkSize: options.chunkSize, embeddingModel: embeddings.model },
+      {
+        userId,
+        documentId,
+        chunks: prepared.chunks.length,
+        embeddingRequests: prepared.embeddingRequests,
+        chunkSize: options.chunkSize,
+        embeddingModel: embeddings.model,
+      },
       "Document re-chunked",
     );
     return { chunksCount: prepared.chunks.length };

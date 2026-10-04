@@ -1,5 +1,12 @@
 import type Database from "better-sqlite3";
-import type { ChunkReplacement, DocumentRepository, UserUsage } from "../../application/ports/document-repository.js";
+import type {
+  ChunkReplacement,
+  DocumentReplacement,
+  DocumentRepository,
+  ReplaceResult,
+  UserUsage,
+} from "../../application/ports/document-repository.js";
+import { isContentHash } from "../../core/content-hash.js";
 import type { ChunkRecord, DocumentRecord } from "../../core/document.js";
 import { NotFoundError } from "../../shared/errors.js";
 import { prepareChunkInsert } from "./chunk-rows.js";
@@ -16,6 +23,10 @@ type DocumentRow = {
   summary: string | null;
   index_profile: string | null;
   created_at: string;
+  content_hash: string | null;
+  document_version: number;
+  updated_at: string | null;
+  previous_content_hash: string | null;
 };
 
 function toDocument(row: DocumentRow): DocumentRecord {
@@ -30,6 +41,11 @@ function toDocument(row: DocumentRow): DocumentRecord {
     summary: row.summary,
     createdAt: row.created_at,
     indexProfile: parseProfileColumn(row.index_profile),
+    // A malformed stored hash is treated as unknown rather than trusted.
+    contentHash: isContentHash(row.content_hash) ? row.content_hash : null,
+    documentVersion: row.document_version,
+    updatedAt: row.updated_at,
+    previousContentHash: isContentHash(row.previous_content_hash) ? row.previous_content_hash : null,
   };
 }
 
@@ -39,18 +55,26 @@ export class SqliteDocumentRepository implements DocumentRepository {
   private readonly insertChunk;
   private readonly selectByUser;
   private readonly selectById;
+  private readonly selectByHash;
+  private readonly selectUnhashed;
   private readonly selectUsage;
   private readonly updateSummaryStatement;
+  private readonly updateHash;
+  private readonly countChunkRows;
+  private readonly updateStoredNameStatement;
   private readonly deleteStatement;
   private readonly saveTransaction;
   private readonly deleteChunksOfDocument;
   private readonly updateProfile;
   private readonly replaceTransaction;
+  private readonly replaceDocumentTransaction;
 
   constructor(db: Database.Database) {
     this.insertDocument = db.prepare(`
-      INSERT INTO documents (id, user_id, file_name, stored_name, mime_type, file_size, text_length, summary, index_profile, index_fingerprint, created_at)
-      VALUES (@id, @userId, @fileName, @storedName, @mimeType, @fileSize, @textLength, @summary, @indexProfile, @indexFingerprint, @createdAt)
+      INSERT INTO documents (id, user_id, file_name, stored_name, mime_type, file_size, text_length, summary, index_profile, index_fingerprint, created_at,
+                             content_hash, document_version, updated_at, previous_content_hash)
+      VALUES (@id, @userId, @fileName, @storedName, @mimeType, @fileSize, @textLength, @summary, @indexProfile, @indexFingerprint, @createdAt,
+              @contentHash, @documentVersion, @updatedAt, @previousContentHash)
     `);
     this.insertChunk = prepareChunkInsert(db);
     this.selectByUser = db.prepare<[string], DocumentRow>(
@@ -59,16 +83,40 @@ export class SqliteDocumentRepository implements DocumentRepository {
     this.selectById = db.prepare<[string, string], DocumentRow>(
       "SELECT * FROM documents WHERE user_id = ? AND id = ?",
     );
+    // Oldest first: when historical duplicates exist, the original is the one reported.
+    this.selectByHash = db.prepare<[string, string], DocumentRow>(
+      "SELECT * FROM documents WHERE user_id = ? AND content_hash = ? ORDER BY created_at, id LIMIT 1",
+    );
+    this.selectUnhashed = db.prepare<[string, number], DocumentRow>(
+      "SELECT * FROM documents WHERE user_id = ? AND file_size = ? AND content_hash IS NULL ORDER BY created_at, id",
+    );
     this.selectUsage = db.prepare<[string], UserUsage>(
       "SELECT COUNT(*) AS documentCount, COALESCE(SUM(file_size), 0) AS totalBytes FROM documents WHERE user_id = ?",
     );
-    this.updateSummaryStatement = db.prepare("UPDATE documents SET summary = ? WHERE user_id = ? AND id = ?");
+    this.updateSummaryStatement = db.prepare(
+      "UPDATE documents SET summary = @summary WHERE user_id = @userId AND id = @documentId AND (@expectedVersion IS NULL OR document_version = @expectedVersion)",
+    );
+    this.updateHash = db.prepare(
+      "UPDATE documents SET content_hash = ? WHERE user_id = ? AND id = ? AND content_hash IS NULL",
+    );
+    this.updateStoredNameStatement = db.prepare("UPDATE documents SET stored_name = ? WHERE user_id = ? AND id = ?");
+    this.countChunkRows = db.prepare<[string, string], { count: number }>(
+      "SELECT COUNT(*) AS count FROM document_chunks WHERE user_id = ? AND document_id = ?",
+    );
     // Chunks are removed by the ON DELETE CASCADE foreign key (enabled in openDatabase).
     this.deleteStatement = db.prepare("DELETE FROM documents WHERE user_id = ? AND id = ?");
 
     this.deleteChunksOfDocument = db.prepare("DELETE FROM document_chunks WHERE user_id = ? AND document_id = ?");
     this.updateProfile = db.prepare(
-      `UPDATE documents SET text_length = @textLength, index_profile = @indexProfile, index_fingerprint = @indexFingerprint
+      `UPDATE documents SET text_length = @textLength, index_profile = @indexProfile, index_fingerprint = @indexFingerprint,
+              updated_at = COALESCE(@updatedAt, updated_at)
+       WHERE user_id = @userId AND id = @documentId`,
+    );
+    const replaceDocumentRow = db.prepare(
+      `UPDATE documents SET file_name = @fileName, stored_name = @storedName, mime_type = @mimeType, file_size = @fileSize,
+              text_length = @textLength, summary = NULL, index_profile = @indexProfile, index_fingerprint = @indexFingerprint,
+              previous_content_hash = content_hash, content_hash = @contentHash,
+              document_version = document_version + 1, updated_at = @updatedAt
        WHERE user_id = @userId AND id = @documentId`,
     );
 
@@ -78,6 +126,7 @@ export class SqliteDocumentRepository implements DocumentRepository {
         userId,
         documentId,
         textLength: replacement.textLength,
+        updatedAt: replacement.updatedAt ?? null,
         ...profileColumns(replacement.indexProfile),
       });
       if (updated.changes !== 1) {
@@ -89,8 +138,30 @@ export class SqliteDocumentRepository implements DocumentRepository {
       }
     });
 
+    this.replaceDocumentTransaction = db.transaction(
+      (userId: string, documentId: string, replacement: DocumentReplacement): ReplaceResult => {
+        const previous = this.selectById.get(userId, documentId);
+        if (!previous) {
+          throw new NotFoundError("Document not found.");
+        }
+        replaceDocumentRow.run({ userId, documentId, ...replacement, ...profileColumns(replacement.indexProfile) });
+        this.deleteChunksOfDocument.run(userId, documentId);
+        for (const chunk of replacement.chunks) {
+          this.insertChunk(chunk);
+        }
+        return { previousStoredName: previous.stored_name, documentVersion: previous.document_version + 1 };
+      },
+    );
+
     this.saveTransaction = db.transaction((document: DocumentRecord, chunks: ChunkRecord[]) => {
-      this.insertDocument.run({ ...document, ...profileColumns(document.indexProfile) });
+      this.insertDocument.run({
+        ...document,
+        ...profileColumns(document.indexProfile),
+        contentHash: document.contentHash ?? null,
+        documentVersion: document.documentVersion ?? 1,
+        updatedAt: document.updatedAt ?? null,
+        previousContentHash: document.previousContentHash ?? null,
+      });
       for (const chunk of chunks) {
         this.insertChunk(chunk);
       }
@@ -103,6 +174,31 @@ export class SqliteDocumentRepository implements DocumentRepository {
 
   async replaceChunks(userId: string, documentId: string, replacement: ChunkReplacement) {
     this.replaceTransaction(userId, documentId, replacement);
+  }
+
+  async replaceDocument(userId: string, documentId: string, replacement: DocumentReplacement) {
+    return this.replaceDocumentTransaction(userId, documentId, replacement);
+  }
+
+  async findByContentHash(userId: string, contentHash: string) {
+    const row = this.selectByHash.get(userId, contentHash);
+    return row ? toDocument(row) : null;
+  }
+
+  async findUnhashedBySize(userId: string, fileSize: number) {
+    return this.selectUnhashed.all(userId, fileSize).map(toDocument);
+  }
+
+  async setContentHash(userId: string, documentId: string, contentHash: string) {
+    return this.updateHash.run(contentHash, userId, documentId).changes > 0;
+  }
+
+  async updateStoredName(userId: string, documentId: string, storedName: string) {
+    return this.updateStoredNameStatement.run(storedName, userId, documentId).changes > 0;
+  }
+
+  async countChunks(userId: string, documentId: string) {
+    return this.countChunkRows.get(userId, documentId)?.count ?? 0;
   }
 
   async getUsage(userId: string) {
@@ -118,8 +214,8 @@ export class SqliteDocumentRepository implements DocumentRepository {
     return row ? toDocument(row) : null;
   }
 
-  async updateSummary(userId: string, documentId: string, summary: string) {
-    this.updateSummaryStatement.run(summary, userId, documentId);
+  async updateSummary(userId: string, documentId: string, summary: string, expectedVersion?: number) {
+    this.updateSummaryStatement.run({ summary, userId, documentId, expectedVersion: expectedVersion ?? null });
   }
 
   async delete(userId: string, documentId: string) {

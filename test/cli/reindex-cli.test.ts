@@ -159,3 +159,56 @@ describe("reindex output", () => {
     });
   });
 });
+
+describe("reindex dry run: which command is needed", () => {
+  const dryRun = (stale: ReindexReport["stale"]) =>
+    report({ dryRun: true, documents: stale.length, chunks: 10, succeeded: 0, failed: [], summary: { checked: 5, embedding: 1, chunking: 0, extractor: 1, unknownChunkLayout: 0 }, stale });
+
+  const markdownBeforeSections: ReindexReport["stale"][number] = {
+    documentId: "m1",
+    fileName: "api.md",
+    reasons: [{ kind: "extractor", field: "extractorVersion", from: "text-v1", to: "markdown-sections-v2" }],
+    action: null,
+  };
+  const embeddingOnly: ReindexReport["stale"][number] = {
+    documentId: "e1",
+    fileName: "notes.txt",
+    reasons: [{ kind: "embedding", field: "embeddingModel", from: "a", to: "b" }],
+    action: "reembed",
+  };
+
+  it("says that a Markdown document indexed before section-aware extraction needs a re-chunk, not a re-embed, and why", () => {
+    const text = formatReport(dryRun([markdownBeforeSections]));
+
+    expect(text).toContain("api.md (m1)");
+    expect(text).toMatch(/Markdown[^\n]*section[^\n]*re-chunk/i);
+    expect(text).toContain("needs re-chunk: npm run reindex -- --rechunk");
+  });
+
+  it("ends with the next steps: the plain command for re-embeds, --rechunk for the others, and that both spend OpenAI calls", () => {
+    const text = formatReport(dryRun([markdownBeforeSections, embeddingOnly]));
+
+    expect(text).toContain("Next steps");
+    expect(text).toContain("1 document needs re-embedding: npm run reindex");
+    expect(text).toContain("1 document needs re-chunking: npm run reindex -- --rechunk");
+    expect(text).toMatch(/OpenAI/);
+    expect(text.indexOf("Next steps")).toBeGreaterThan(text.indexOf("Summary:"));
+  });
+
+  it("a re-chunk also refreshes the embeddings, so a document that needs both is listed once, under re-chunking", () => {
+    const both = { ...markdownBeforeSections, reasons: [...embeddingOnly.reasons, ...markdownBeforeSections.reasons] };
+
+    const text = formatReport(dryRun([both]));
+
+    expect(text).toContain("1 document needs re-chunking");
+    expect(text).not.toContain("needs re-embedding");
+  });
+
+  it("has no next steps when nothing is stale", () => {
+    expect(formatReport(report({ dryRun: true, documents: 0, chunks: 0, succeeded: 0, failed: [], stale: [] }))).not.toContain("Next steps");
+  });
+
+  it("a real run does not print the dry-run hints", () => {
+    expect(formatReport(report({ stale: [embeddingOnly] }))).not.toContain("Next steps");
+  });
+});

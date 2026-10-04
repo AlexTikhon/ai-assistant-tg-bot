@@ -85,6 +85,22 @@ describe("architecture boundaries", () => {
     expect(offenders.map((entry) => path.relative(SRC, entry.file))).toEqual([]);
   });
 
+  it("the integrity, repair, backup and startup-check code cannot reach a paid provider: nothing there imports embeddings, OpenAI or LangChain", () => {
+    const free = files.filter((entry) => {
+      const relative = path.relative(SRC, entry.file).replace(/\\/g, "/");
+      return /^(application\/(use-cases\/(inspect|repair)-integrity|startup-check|ports\/integrity-store)|infrastructure\/(backup\/|sqlite\/sqlite-integrity-store)|cli\/(integrity|backup))/.test(relative);
+    });
+
+    expect(free.length).toBeGreaterThanOrEqual(8); // the pattern really matches the files it is meant to guard
+    const offenders = free.filter(
+      (entry) =>
+        entry.imports.some((imported) => /embeddings|openai|chat-model|speech/.test(imported)) ||
+        /from\s+["'](openai|@langchain\/[^"']+)["']|embedDocuments|embedQuery|OPENAI_API_KEY/.test(fs.readFileSync(entry.file, "utf-8")),
+    );
+
+    expect(offenders.map((entry) => path.relative(SRC, entry.file))).toEqual([]);
+  });
+
   it("format-specific provenance (PDF pages and labels, Markdown sections) stays optional in the core model", () => {
     const provenance = fs.readFileSync(path.join(SRC, "core", "provenance.ts"), "utf-8");
 

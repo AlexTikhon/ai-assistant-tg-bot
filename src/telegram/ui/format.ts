@@ -1,7 +1,10 @@
+import type { DocumentOverview } from "../../application/document-overview.js";
 import type { AnswerQuestionResult } from "../../application/use-cases/answer-question.use-case.js";
 import type { IngestDocumentResult } from "../../application/use-cases/ingest-document.use-case.js";
+import type { ReplaceDocumentResult } from "../../application/use-cases/replace-document.use-case.js";
 import { formatSourceLocation } from "../../core/citations.js";
-import type { DocumentRecord } from "../../core/document.js";
+import type { IndexHealth } from "../../core/index-health.js";
+import { getFileExtension } from "../../shared/utils/path.js";
 import { messages } from "./messages.js";
 
 /**
@@ -25,17 +28,98 @@ export function formatAnswer(result: AnswerQuestionResult) {
   return `${result.answer}\n\nSources:\n${lines.join("\n")}`;
 }
 
-export function formatDocumentList(documents: DocumentRecord[]) {
-  return documents.map((document) => `${document.id}\n${document.fileName} (${document.textLength} chars)`).join("\n\n");
+/** Sizes the way a person reads them: "1000 B", "2 KB", "2.9 KB", "1.5 MB". */
+function formatSize(bytes: number) {
+  const trim = (value: number) => String(Math.round(value * 10) / 10);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${trim(bytes / 1024)} KB`;
+  return `${trim(bytes / (1024 * 1024))} MB`;
 }
 
-export function formatIngestResult(result: IngestDocumentResult) {
-  return [
-    `Indexed ${result.fileName}.`,
-    `Document ID: ${result.documentId}`,
-    `Chunks: ${result.chunksCount}`,
-    "You can now ask questions.",
-  ].join("\n");
+const day = (timestamp: string) => timestamp.slice(0, 10);
+
+/** A plain word for the index state. Internal details (profiles, hashes, dimensions) are for the operator. */
+function describeHealth(health: IndexHealth) {
+  const labels: Record<IndexHealth["state"], string> = {
+    current: "ready",
+    unindexed: "not searchable",
+    "corrupt-index": "partly unreadable",
+    "embedding-stale": "index outdated",
+    "chunking-stale": "index outdated",
+    "extractor-stale": "index outdated",
+    "missing-file": "original file missing",
+  };
+  const extra = health.state !== "missing-file" && health.issues.includes("missing-file") ? " · original file missing" : "";
+  return `${labels[health.state]}${extra}`;
+}
+
+function describeDates({ document }: DocumentOverview) {
+  const added = `added ${day(document.createdAt)}`;
+  return document.updatedAt ? `${added} · updated ${day(document.updatedAt)}` : added;
+}
+
+/** Compact: id on its own line (to copy into /delete, /summary, /replace), then name, size, dates, state. */
+export function formatDocumentList(overviews: DocumentOverview[]) {
+  return overviews
+    .map((overview) => {
+      const { document } = overview;
+      return `${document.id}\n${document.fileName} · ${formatSize(document.fileSize)} · ${describeDates(overview)} · ${describeHealth(overview.health)}`;
+    })
+    .join("\n\n");
+}
+
+/** `/doc <id>`: what a user may want to know about one document. No hashes, fingerprints or dimensions. */
+export function formatDocumentInfo(overview: DocumentOverview) {
+  const { document } = overview;
+  const type = getFileExtension(document.fileName).slice(1).toUpperCase() || "unknown";
+  const lines = [
+    document.fileName,
+    `ID: ${document.id}`,
+    `Type: ${type}`,
+    `Size: ${formatSize(document.fileSize)}`,
+    `Added: ${day(document.createdAt)}`,
+  ];
+  if (document.updatedAt) {
+    lines.push(`Updated: ${day(document.updatedAt)}`);
+  }
+  if ((document.documentVersion ?? 1) > 1) {
+    lines.push(`Version: ${document.documentVersion}`);
+  }
+  lines.push(`Chunks: ${overview.chunksCount}`, `Status: ${describeHealth(overview.health)}`);
+  return lines.join("\n");
+}
+
+export function formatIngestResult(result: IngestDocumentResult | ReplaceDocumentResult) {
+  switch (result.kind) {
+    case "created":
+      return [
+        `Indexed ${result.fileName}.`,
+        `Document ID: ${result.documentId}`,
+        `Chunks: ${result.chunksCount}`,
+        "You can now ask questions.",
+      ].join("\n");
+
+    case "replaced":
+      return [
+        `Replaced ${result.fileName}.`,
+        `Document ID: ${result.documentId} (unchanged)`,
+        `Chunks: ${result.chunksCount}`,
+        "Questions now use the new content.",
+      ].join("\n");
+
+    case "already-exists": {
+      const lines = [messages.alreadyExists, `${result.fileName} · Document ID: ${result.documentId}`];
+      if (result.restoredOriginal) {
+        lines.push("Its original file had gone missing; it has been restored from this upload.");
+      }
+      if (result.health.state === "unindexed") {
+        lines.push(`It cannot be searched right now. Send the file again with the caption /replace ${result.documentId} to rebuild it.`);
+      } else if (result.health.issues.some((issue) => issue.endsWith("-stale") || issue === "corrupt-index")) {
+        lines.push("Its search index is outdated, so answers may be less precise until it is refreshed.");
+      }
+      return lines.join("\n");
+    }
+  }
 }
 
 export function formatSummary(fileName: string, summary: string) {

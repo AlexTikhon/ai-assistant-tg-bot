@@ -69,6 +69,11 @@ export class FakeChatModel implements ChatModel {
 
 export class InMemoryFileStorage implements FileStorage {
   files = new Map<string, Buffer>();
+  /** Leftovers of interrupted writes: name -> size and age inputs. Tests plant them directly. */
+  temporary = new Map<string, { size: number; modifiedAtMs: number }>();
+  /** Modification times of committed files (epoch ms); files without an entry count as modified at `defaultModifiedAtMs`. */
+  modifiedAtMs = new Map<string, number>();
+  defaultModifiedAtMs = 0;
   failOnSave = false;
   failOnDelete = false;
   failOnRead = false;
@@ -79,6 +84,28 @@ export class InMemoryFileStorage implements FileStorage {
     const storedName = `${(this.counter += 1)}-${fileName}`;
     this.files.set(storedName, data);
     return storedName;
+  }
+
+  async stat(storedName: string) {
+    const data = this.files.get(storedName);
+    return data ? { size: data.byteLength } : null;
+  }
+
+  async list() {
+    return [
+      ...[...this.files].map(([name, data]) => ({
+        name,
+        kind: "stored" as const,
+        size: data.byteLength,
+        modifiedAtMs: this.modifiedAtMs.get(name) ?? this.defaultModifiedAtMs,
+      })),
+      ...[...this.temporary].map(([name, info]) => ({ name, kind: "temporary" as const, ...info })),
+    ];
+  }
+
+  async deleteTemporary(name: string) {
+    if (this.failOnDelete) throw new Error("permission denied");
+    this.temporary.delete(name);
   }
 
   async read(storedName: string) {

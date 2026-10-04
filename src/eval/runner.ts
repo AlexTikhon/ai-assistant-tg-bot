@@ -13,7 +13,8 @@ import { aggregateCases, hitAtK, mean, recallAtK, reciprocalRank } from "./metri
 import type { AggregateMetrics } from "./metrics.js";
 
 /** The query-time settings under evaluation; the same knobs the bot has. rrfK is always explicit so a report states it. */
-export type RetrievalSettings = Omit<RetrievalOptions, "rrfK"> & { rrfK: number };
+/** Evaluation measures the gate itself, so the operational rollout mode (off/shadow/enforce) is not a setting here. */
+export type RetrievalSettings = Omit<RetrievalOptions, "rrfK" | "confidenceMode"> & { rrfK: number };
 
 export const DEFAULT_KS = [1, 3, 5] as const;
 

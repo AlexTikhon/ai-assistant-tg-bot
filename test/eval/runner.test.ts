@@ -189,7 +189,8 @@ describe("evidence lost to context selection", () => {
     index = await buildEvalIndex(
       [
         { owner: "alice", fileName: "a.md", content: text },
-        { owner: "alice", fileName: "b.md", content: text },
+        // A trailing newline makes the bytes differ (identical uploads are one document) but not the chunk text.
+        { owner: "alice", fileName: "b.md", content: `${text}\n` },
       ],
       chunking,
       embeddings,

@@ -1,10 +1,17 @@
 import type { Context, MiddlewareFn } from "telegraf";
 import { AppError, ExternalServiceError } from "../shared/errors.js";
 import { logger } from "../shared/logger.js";
+import { newRequestId, runWithRequestId } from "../shared/request-context.js";
 
 const log = logger.child({ component: "telegram" });
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong while processing your request.";
+
+/**
+ * Gives every update a short opaque request id for the whole time it is handled, so all log lines of one update
+ * (handler, retrieval, generation, ingestion) can be correlated. Never shown to users in normal replies.
+ */
+export const requestContext: MiddlewareFn<Context> = (_ctx, next) => runWithRequestId(newRequestId(), () => next());
 
 /** Logs how long each update took. Never logs message content. */
 export const requestLogger: MiddlewareFn<Context> = async (ctx, next) => {

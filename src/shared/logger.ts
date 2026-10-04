@@ -1,4 +1,6 @@
 import pino from "pino";
+import type { DestinationStream } from "pino";
+import { currentRequestId } from "./request-context.js";
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   // Telegram bot tokens, also when embedded in api.telegram.org URLs.
@@ -28,16 +30,29 @@ function scrubError(error: unknown): unknown {
  * Structured JSON logger.
  *
  * Conventions: log ids, sizes and durations - never document text, embeddings or secrets.
+ * Lines logged inside a Telegram update also carry its `requestId`.
  * Errors go under the `err` key so they are serialized (and scrubbed) consistently.
  */
-export const logger = pino({
-  level: process.env.LOG_LEVEL ?? "info",
-  serializers: { err: scrubError },
-  redact: {
-    paths: ["apiKey", "botToken", "token", "authorization", "headers.authorization", "*.apiKey", "*.botToken", "*.token"],
-    censor: "[redacted]",
-  },
-});
+export function createLogger(destination?: DestinationStream, level = process.env.LOG_LEVEL ?? "info") {
+  return pino(
+    {
+      level,
+      serializers: { err: scrubError },
+      // Every line logged while an update is being handled carries its short request id (see request-context.ts).
+      mixin: () => {
+        const requestId = currentRequestId();
+        return requestId ? { requestId } : {};
+      },
+      redact: {
+        paths: ["apiKey", "botToken", "token", "authorization", "headers.authorization", "*.apiKey", "*.botToken", "*.token"],
+        censor: "[redacted]",
+      },
+    },
+    destination,
+  );
+}
+
+export const logger = createLogger();
 
 export type Logger = typeof logger;
 

@@ -1,10 +1,10 @@
-/** An ATX heading ("## Title") found in a Markdown text. */
+/** An ATX ("## Title") or Setext ("Title" underlined with === or ---) heading found in a Markdown text. */
 export type MarkdownHeading = {
-  /** 1 for "#" ... 6 for "######". */
+  /** 1 for "#" or "===" ... 6 for "######"; a "---" underline is level 2. */
   level: number;
   /** The heading text with closing hashes removed and whitespace collapsed. */
   title: string;
-  /** Offset in the parsed text of the first character of the heading line. */
+  /** Offset in the parsed text of the first character of the heading's first line. */
   start: number;
 };
 
@@ -12,19 +12,51 @@ export type MarkdownHeading = {
 const ATX_HEADING = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
 const ATX_EMPTY = /^ {0,3}#{1,6}[ \t]*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+/** Up to three spaces, then only "=" or only "-" (any length), nothing else. */
+const SETEXT_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
+/** "***", "---", "___" (three or more, spaces allowed between): a rule, which never carries heading text. */
+const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+/** A block quote or list item: these interrupt a paragraph and are never Setext heading text. */
+const QUOTE_OR_LIST = /^ {0,3}(?:>|[-+*][ \t]|\d{1,9}[.)][ \t])/;
+const INDENTED = /^(?: {4}|\t)/;
+
+type Paragraph = { start: number; lines: string[] };
+
+/** Lines of a leading YAML front matter block ("---" ... "---"/"..."), or 0 when the text has none. */
+function frontMatterLength(lines: string[]): number {
+  if (lines[0]?.trimEnd() !== "---") {
+    return 0;
+  }
+  const end = lines.findIndex((line, index) => index > 0 && (line.trimEnd() === "---" || line.trimEnd() === "..."));
+  return end === -1 ? 0 : end + 1;
+}
 
 /**
  * The headings of a Markdown text, in order. A deliberately small parser - not a Markdown implementation:
- * only ATX headings ("#"-style; Setext "===" underlines are not recognised) outside fenced code blocks, so a
- * "# comment" in a shell snippet is not mistaken for a title. Pure and deterministic.
+ * ATX headings ("#"), and Setext headings (a paragraph underlined with "===" for level 1 or "---" for level
+ * 2), always outside fenced code blocks, so a "# comment" or a "=====" in a code sample is not mistaken for a
+ * title. A heading is only recognised where CommonMark would: Setext text is the paragraph directly above the
+ * underline (a rule after a blank line, a list item or a quote is not one), and YAML front matter is skipped
+ * rather than read as a heading. Pure and deterministic.
  */
 export function parseMarkdownHeadings(text: string): MarkdownHeading[] {
   const headings: MarkdownHeading[] = [];
-  let fence: string | null = null;
-  let offset = 0;
+  const rawLines = text.split("\n");
+  const lines = rawLines.map((rawLine) => (rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine));
 
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+  let fence: string | null = null;
+  let paragraph: Paragraph | null = null;
+  let offset = 0;
+  const skipped = frontMatterLength(lines);
+
+  for (const [index, line] of lines.entries()) {
+    const lineStart = offset;
+    offset += rawLines[index].length + 1;
+
+    if (index < skipped) {
+      continue;
+    }
+
     const marker = FENCE.exec(line)?.[1];
 
     if (fence !== null) {
@@ -32,17 +64,46 @@ export function parseMarkdownHeadings(text: string): MarkdownHeading[] {
       if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) {
         fence = null;
       }
-    } else if (marker) {
+      continue;
+    }
+    if (marker) {
       fence = marker;
-    } else if (!ATX_EMPTY.test(line)) {
+      paragraph = null;
+      continue;
+    }
+
+    if (line.trim() === "") {
+      paragraph = null;
+      continue;
+    }
+
+    const underline = paragraph ? SETEXT_UNDERLINE.exec(line) : null;
+    if (paragraph && underline) {
+      const title = paragraph.lines.join(" ").replace(/\s+/g, " ").trim();
+      if (title) {
+        headings.push({ level: underline[1][0] === "=" ? 1 : 2, title, start: paragraph.start });
+      }
+      paragraph = null;
+      continue;
+    }
+
+    if (!ATX_EMPTY.test(line)) {
       const match = ATX_HEADING.exec(line);
       const title = match?.[2].replace(/\s+/g, " ").trim();
       if (match && title) {
-        headings.push({ level: match[1].length, title, start: offset });
+        headings.push({ level: match[1].length, title, start: lineStart });
+        paragraph = null;
+        continue;
       }
     }
 
-    offset += rawLine.length + 1;
+    if (THEMATIC_BREAK.test(line) || QUOTE_OR_LIST.test(line) || ATX_EMPTY.test(line)) {
+      paragraph = null;
+    } else if (paragraph) {
+      paragraph.lines.push(line.trim()); // a continuation line (indented ones too, as in CommonMark)
+    } else if (!INDENTED.test(line)) {
+      paragraph = { start: lineStart, lines: [line.trim()] };
+    }
   }
 
   return headings;

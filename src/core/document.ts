@@ -25,6 +25,17 @@ export type DocumentRecord = {
    * recipes were recorded; maintenance describes those from what is known (see IndexMaintenance).
    */
   indexProfile?: StoredIndexProfile | null;
+  /**
+   * SHA-256 of the original bytes (see content-hash.ts). null = unknown: the document was stored before
+   * hashes were recorded and has not been backfilled yet. Absent on input means unknown.
+   */
+  contentHash?: string | null;
+  /** 1 for a new document; +1 for every explicit replacement of its content. Absent on input means 1. */
+  documentVersion?: number;
+  /** When the content or the index was last rebuilt (replacement, re-chunk). null/absent: never since it was created. */
+  updatedAt?: string | null;
+  /** Content hash before the last replacement; null when the document was never replaced. */
+  previousContentHash?: string | null;
 };
 
 /** A piece of a document as produced by the splitter, before it is embedded. */

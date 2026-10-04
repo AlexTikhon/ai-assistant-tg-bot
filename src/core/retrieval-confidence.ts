@@ -137,6 +137,14 @@ export const DEFAULT_CONFIDENCE_POLICY: ConfidencePolicy = { minSemanticScore: 0
 /** No gate: anything that was retrieved counts as evidence. What a retriever without a configured policy uses. */
 export const PASS_THROUGH_POLICY: ConfidencePolicy = { minSemanticScore: -1, minTermCoverage: 0, requireKnownIdentifiers: false };
 
+/**
+ * How the confidence gate is operated:
+ * - off:     no gate; whatever was retrieved is used.
+ * - shadow:  the decision is computed and logged, but the user gets the same answer as with the gate off.
+ * - enforce: weak evidence is answered with a deterministic abstention, before any generation.
+ */
+export type ConfidenceMode = "off" | "shadow" | "enforce";
+
 /** Why the evidence was judged sufficient. */
 export type AnswerReason = "exact-token" | "semantic" | "term-coverage";
 /** Why it was not. */

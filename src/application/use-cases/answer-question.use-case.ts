@@ -4,8 +4,10 @@ import type { RetrievedChunk } from "../../core/retrieval.js";
 import type { AbstainReason, ConfidenceAssessment, RetrievalSignals } from "../../core/retrieval-confidence.js";
 import { ValidationError } from "../../shared/errors.js";
 import { logger } from "../../shared/logger.js";
+import { currentRequestId } from "../../shared/request-context.js";
 import type { InfoLog, WarnLog } from "../../shared/logger.js";
-import type { HybridRetriever, RetrievalTrace } from "../hybrid-retriever.js";
+import type { HybridRetriever, RetrievalResult, RetrievalTrace } from "../hybrid-retriever.js";
+import type { AnswerOutcomes, ConfidenceOutcome } from "../ports/answer-outcomes.js";
 import { buildAnswerMessages } from "../prompts/answer-question.prompt.js";
 import type { ChatModel } from "../ports/chat-model.js";
 
@@ -45,6 +47,8 @@ type Dependencies = {
     /** Emit an extra structured entry that explains every retrieval (ids, ranks, counts - never text). */
     ragDebug?: boolean;
   };
+  /** Where the confidence outcome of each answer is remembered (by request id) for later feedback. */
+  outcomes?: AnswerOutcomes;
   log?: InfoLog & WarnLog;
 };
 
@@ -68,11 +72,13 @@ export class AnswerQuestionUseCase {
       throw new ValidationError(`The question is too long (max ${MAX_QUESTION_CHARS} characters).`);
     }
 
-    const { chunks, confidence, trace } = await retriever.retrieve({
+    const retrieval = await retriever.retrieve({
       userId: input.userId,
       documentId: input.documentId,
       question,
     });
+    const { chunks, confidence, trace } = retrieval;
+    this.observeConfidence(input.userId, retrieval, elapsedSince(startedAt));
 
     // Weak evidence is not sent to the model in the hope that the prompt makes it refuse: the decision is made here,
     // deterministically, before any paid generation.
@@ -116,6 +122,56 @@ export class AnswerQuestionUseCase {
     };
   }
 
+  /**
+   * Shadow mode: logs what the gate would have decided - and remembers the outcome for feedback - while the
+   * answer proceeds exactly as without a gate. Labels, numbers and ids only: never the question (not even with
+   * LOG_QUESTIONS), a document, the context or a vector, so the log can be kept and shared for calibration.
+   */
+  private observeConfidence(userId: string, retrieval: RetrievalResult, durationMs: number) {
+    const { confidence, shadow } = retrieval;
+    const decided = shadow?.assessment ?? confidence;
+    const requestId = currentRequestId();
+
+    if (shadow) {
+      const { signals } = shadow.assessment;
+      this.log.info(
+        {
+          userId,
+          mode: "shadow",
+          decision: shadow.assessment.decision,
+          reason: shadow.assessment.reason,
+          wouldAbstain: shadow.assessment.decision === "abstain",
+          answered: confidence.decision === "answer" && retrieval.chunks.length > 0,
+          semanticScore: signals.topSemanticScore,
+          semanticGap: signals.semanticGap,
+          threshold: shadow.policy.minSemanticScore,
+          termCoverage: signals.bestTermCoverage,
+          termCoverageThreshold: shadow.policy.minTermCoverage,
+          exactTargets: signals.exactTargets,
+          exactTargetsFound: signals.exactTargetsFound,
+          identifiers: signals.identifiers,
+          identifiersFound: signals.identifiersFound,
+          candidateCount: signals.candidateCount,
+          semanticCount: signals.semanticCount,
+          lexicalCount: signals.lexicalCount,
+          durationMs,
+        },
+        "Confidence gate shadow decision",
+      );
+    }
+
+    if (requestId && this.deps.outcomes) {
+      const outcome: ConfidenceOutcome = {
+        mode: shadow ? "shadow" : this.deps.retriever.mode,
+        decision: confidence.decision,
+        reason: confidence.reason,
+        ...(shadow ? { shadowDecision: decided.decision, shadowReason: decided.reason } : {}),
+        topSemanticScore: decided.signals.topSemanticScore,
+      };
+      this.deps.outcomes.record(requestId, outcome);
+    }
+  }
+
   /** Numbers and ids only - never the question (unless LOG_QUESTIONS) and never document text. */
   private logAbstention(
     userId: string,
@@ -132,6 +188,8 @@ export class AnswerQuestionUseCase {
         ...(this.deps.options?.logQuestions ? { question } : {}),
         reason,
         selected: 0,
+        // Provider calls this question cost: the query embedding only - the chat model was never asked.
+        calls: { embedding: 1, chat: 0 },
         signals,
         timings: trace.timings,
         durationMs,
@@ -156,6 +214,7 @@ export class AnswerQuestionUseCase {
         questionLength: question.length,
         ...(options?.logQuestions ? { question } : {}),
         selected: chunks.length,
+        calls: { embedding: 1, chat: 1 },
         timings: { ...trace.timings, generationMs: timing.generationMs },
         durationMs: timing.durationMs,
       },

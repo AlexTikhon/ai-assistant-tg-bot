@@ -231,6 +231,49 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    name: "document lifecycle: content hash, version and update metadata",
+    up(db) {
+      // content_hash stays NULL ("unknown") for existing rows: hashing needs the original file, which may be
+      // missing, so it is filled lazily (on a matching upload) or by `npm run integrity -- --repair`.
+      // The index is deliberately NOT unique: historical duplicates are legitimate data, and a uniqueness
+      // rule would make the backfill and this migration fail on them. The one-document-per-content rule
+      // is enforced by the ingestion use case (serialized per user) and reported by the integrity check.
+      db.exec(`
+        ALTER TABLE documents ADD COLUMN content_hash TEXT;
+        ALTER TABLE documents ADD COLUMN document_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE documents ADD COLUMN updated_at TEXT;
+        ALTER TABLE documents ADD COLUMN previous_content_hash TEXT;
+        CREATE INDEX idx_documents_user_hash ON documents(user_id, content_hash);
+      `);
+    },
+  },
+  {
+    version: 8,
+    name: "answer feedback (thumbs up/down) correlated with the confidence decision",
+    up(db) {
+      // Deliberately tiny and free of text: who rated which answer (by its short request id), how, and what the
+      // confidence gate had decided. IF NOT EXISTS keeps the migration re-runnable.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS answer_feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          request_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          rating TEXT NOT NULL CHECK (rating IN ('good', 'bad')),
+          created_at TEXT NOT NULL,
+          confidence_mode TEXT,
+          decision TEXT,
+          reason TEXT,
+          shadow_decision TEXT,
+          shadow_reason TEXT,
+          top_semantic_score REAL,
+          UNIQUE (request_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_created ON answer_feedback(created_at);
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1].version;

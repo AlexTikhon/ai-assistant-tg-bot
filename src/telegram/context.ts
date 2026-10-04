@@ -16,6 +16,17 @@ export function getMessageText(ctx: Context) {
   return message && "text" in message ? message.text.trim() : "";
 }
 
+/** Whether the text is that command (also `/command@BotName`), with or without arguments. */
+export function hasCommand(text: string | undefined, command: string) {
+  return text !== undefined && new RegExp(`^/${command}(?:@\\w+)?(?:\\s|$)`, "i").test(text.trim());
+}
+
+/** The caption a user attached to a file, or undefined. */
+export function getCaption(ctx: Context) {
+  const message = ctx.message;
+  return message && "caption" in message ? message.caption?.trim() : undefined;
+}
+
 /**
  * Returns what follows `/command` (also `/command@BotName`), trimmed.
  * Returns "" when the text is not that command.

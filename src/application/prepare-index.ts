@@ -10,6 +10,7 @@ import { splitTextWithOffsets } from "../core/text-splitter.js";
 import { ValidationError } from "../shared/errors.js";
 import type { EmbeddingsProvider } from "./ports/embeddings-provider.js";
 import type { DocumentTextExtractor, ExtractionInput } from "./ports/text-extractor.js";
+import { countEmbeddingRequests } from "../core/embedding-batches.js";
 import { ensureEmbeddingBatch } from "./validate-embeddings.js";
 
 export type PrepareIndexOptions = {
@@ -25,6 +26,8 @@ export type PreparedIndex = {
   /** Chunks with their vectors and provenance (pages, section path); callers add ids, owner and timestamp. */
   chunks: Array<{ chunkIndex: number; content: string; embedding: number[] } & SourceProvenance>;
   embeddingModel: string;
+  /** How many requests the provider needed for the vectors (a cost indicator: calls, not money). */
+  embeddingRequests: number;
 };
 
 /**
@@ -64,6 +67,7 @@ export async function prepareIndex(
   return {
     textLength: text.length,
     embeddingModel: embeddings.model,
+    embeddingRequests: countEmbeddingRequests(drafts.length, embeddings.batchSize),
     profile: buildIndexProfile({
       fileName: input.fileName,
       embeddingModel: embeddings.model,

@@ -28,12 +28,16 @@ function createUseCase(documents: DocumentRepository = stores.documents, overrid
   });
 }
 
-const upload = (overrides: Partial<{ userId: string; fileName: string; text: string }> = {}) => ({
-  userId: overrides.userId ?? "user-1",
-  fileName: overrides.fileName ?? "pets.txt",
-  mimeType: "text/plain",
-  data: Buffer.from(overrides.text ?? "The cat sleeps all day. The dog barks at the cat. ".repeat(10)),
-});
+/** Identical bytes are one document for the same user, so by default every file name gets its own content. */
+const upload = (overrides: Partial<{ userId: string; fileName: string; text: string }> = {}) => {
+  const fileName = overrides.fileName ?? "pets.txt";
+  return {
+    userId: overrides.userId ?? "user-1",
+    fileName,
+    mimeType: "text/plain",
+    data: Buffer.from(overrides.text ?? `${"The cat sleeps all day. The dog barks at the cat. ".repeat(10)}(${fileName})`),
+  };
+};
 
 function rowCount(table: string) {
   return (stores.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
@@ -119,6 +123,8 @@ describe("IngestDocumentUseCase", () => {
   it("removes the stored file when persisting fails (compensation)", async () => {
     const failingRepository = {
       getUsage: async () => ({ documentCount: 0, totalBytes: 0 }),
+      findByContentHash: async () => null,
+      findUnhashedBySize: async () => [],
       saveWithChunks: async () => {
         throw new Error("database is locked");
       },
@@ -134,6 +140,8 @@ describe("IngestDocumentUseCase", () => {
     files.failOnDelete = true;
     const failingRepository = {
       getUsage: async () => ({ documentCount: 0, totalBytes: 0 }),
+      findByContentHash: async () => null,
+      findUnhashedBySize: async () => [],
       saveWithChunks: async () => {
         throw new Error("database is locked");
       },
@@ -179,17 +187,17 @@ describe("IngestDocumentUseCase per-user limits", () => {
     await useCase.execute(upload({ userId: "user-1" }));
 
     await expect(useCase.execute(upload({ userId: "user-2" }))).resolves.toMatchObject({ chunksCount: expect.any(Number) });
-    await expect(useCase.execute(upload({ userId: "user-1" }))).rejects.toThrow(ValidationError);
+    await expect(useCase.execute(upload({ userId: "user-1", fileName: "second.txt" }))).rejects.toThrow(ValidationError);
   });
 
   it("rejects an upload that would push the user's stored bytes over the storage limit", async () => {
-    const text = "x".repeat(300);
+    const text = (n: number) => `${"x".repeat(299)}${n}`; // 300 bytes each, all different content
     const useCase = createUseCase(stores.documents, { maxStorageBytesPerUser: 700 });
-    await useCase.execute(upload({ text }));
-    await useCase.execute(upload({ text }));
+    await useCase.execute(upload({ text: text(1) }));
+    await useCase.execute(upload({ text: text(2) }));
     embeddings.documentCalls.length = 0;
 
-    await expect(useCase.execute(upload({ text }))).rejects.toThrow(/storage limit/);
+    await expect(useCase.execute(upload({ text: text(3) }))).rejects.toThrow(/storage limit/);
 
     expect(embeddings.documentCalls).toHaveLength(0);
     expect(rowCount("documents")).toBe(2);
@@ -360,10 +368,10 @@ describe("Markdown section provenance", () => {
 
   it("records a different extractor version for Markdown, so documents indexed before section paths are reported as stale", async () => {
     const markdown = await createUseCase().execute(upload({ fileName: "a.md", text: "# A\n\nbody" }));
-    const text = await createUseCase().execute(upload({ fileName: "a.txt", text: "# A\n\nbody" }));
+    const text = await createUseCase().execute(upload({ fileName: "a.txt", text: "# A\n\nbody of the text file" }));
 
     const profile = async (id: string) => (await stores.documents.findById("user-1", id))?.indexProfile?.extractorVersion;
-    expect(await profile(markdown.documentId)).toBe("markdown-sections-v1");
+    expect(await profile(markdown.documentId)).toBe("markdown-sections-v2");
     expect(await profile(text.documentId)).toBe("text-v1");
   });
 });

@@ -1,5 +1,7 @@
 import type { AudioInput, SpeechToText } from "../../application/ports/speech-to-text.js";
 import { ExternalServiceError } from "../../shared/errors.js";
+import { HttpStatusError, parseRetryAfter, withRetry } from "../../shared/retry.js";
+import type { RetryOptions } from "../../shared/retry.js";
 
 const TRANSCRIPTIONS_URL = "https://api.openai.com/v1/audio/transcriptions";
 
@@ -9,6 +11,8 @@ type Options = {
   timeoutMs: number;
   /** Injectable for tests. */
   fetchImpl?: typeof fetch;
+  /** Bounded retry of transient failures (429, 5xx, network resets, timeouts). Never retries 401/403/other 4xx. */
+  retry?: RetryOptions;
 };
 
 /** Speech-to-text through the OpenAI transcription endpoint. */
@@ -27,21 +31,27 @@ export class OpenAISpeechToText implements SpeechToText {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(TRANSCRIPTIONS_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${this.options.apiKey}` },
-        body: form,
-        signal: AbortSignal.timeout(this.options.timeoutMs),
-      });
+      // A transcription is a pure function of the audio: repeating it after a transient failure is safe. The
+      // timeout applies to each attempt; the number of attempts and the waits between them are bounded.
+      response = await withRetry(async () => {
+        const attempt = await this.fetchImpl(TRANSCRIPTIONS_URL, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.options.apiKey}` },
+          body: form,
+          signal: AbortSignal.timeout(this.options.timeoutMs),
+        });
+        if (!attempt.ok) {
+          await attempt.body?.cancel().catch(() => undefined);
+          throw new HttpStatusError(`Transcription request failed with status ${attempt.status}`, {
+            status: attempt.status,
+            retryAfterMs: parseRetryAfter(attempt.headers.get("retry-after")),
+          });
+        }
+        return attempt;
+      }, this.options.retry);
     } catch (error) {
-      // Timeouts surface as TimeoutError/AbortError; network failures as TypeError.
+      // Timeouts surface as TimeoutError/AbortError; network failures as TypeError; others as HttpStatusError.
       throw new ExternalServiceError("openai", { cause: error });
-    }
-
-    if (!response.ok) {
-      throw new ExternalServiceError("openai", {
-        cause: new Error(`Transcription request failed with status ${response.status}`),
-      });
     }
 
     let body: unknown;

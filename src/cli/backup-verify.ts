@@ -1,0 +1,37 @@
+import "dotenv/config";
+import path from "node:path";
+import { loadToolConfig } from "../config/config.js";
+import { verifyBackup } from "../infrastructure/backup/verify-backup.js";
+import { formatVerification, parseVerifyArgs, VERIFY_USAGE } from "./backup-cli.js";
+
+/** `npm run backup:verify -- <directory>`. Read-only; exit code 1 when the backup has problems. */
+async function main() {
+  const command = parseVerifyArgs(process.argv.slice(2));
+
+  if (command.kind === "help") {
+    console.log(VERIFY_USAGE);
+    return 0;
+  }
+  if (command.kind === "error") {
+    console.error(`${command.message}\n\n${VERIFY_USAGE}`);
+    return 1;
+  }
+
+  const config = loadToolConfig();
+  const result = await verifyBackup(path.resolve(command.directory), {
+    recipe: { embeddingModel: config.openai.embeddingsModel, ...config.chunking },
+    now: Date.now,
+  });
+  console.log(formatVerification(result));
+  return result.ok ? 0 : 1;
+}
+
+main().then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  },
+);

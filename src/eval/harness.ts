@@ -64,6 +64,17 @@ class MemoryFileStorage implements FileStorage {
     return data;
   }
 
+  async stat(storedName: string) {
+    const data = this.files.get(storedName);
+    return data ? { size: data.byteLength } : null;
+  }
+
+  async list() {
+    return [...this.files].map(([name, data]) => ({ name, kind: "stored" as const, size: data.byteLength, modifiedAtMs: 0 }));
+  }
+
+  async deleteTemporary() {}
+
   async delete(storedName: string) {
     this.files.delete(storedName);
   }

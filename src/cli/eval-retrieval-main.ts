@@ -79,7 +79,9 @@ export async function main(argv: string[]): Promise<number> {
   // A baseline pins its own configuration, so the check never depends on the environment.
   const baseline = command.baseline ? parseBaseline(read(command.baseline)) : undefined;
   const { confidence: policyOverride, ...numericOverrides } = command.overrides;
-  const base: EvalSettings = baseline?.config ?? { ...config.chunking, ...config.retrieval, ...numericOverrides };
+  // The operational rollout mode (off/shadow/enforce) is not an evaluation setting: evaluation measures the gate itself.
+  const { confidenceMode: _rolloutMode, ...retrievalSettings } = config.retrieval;
+  const base: EvalSettings = baseline?.config ?? { ...config.chunking, ...retrievalSettings, ...numericOverrides };
   if (policyOverride && !baseline) {
     base.confidence = { ...(base.confidence ?? DEFAULT_CONFIDENCE_POLICY), ...policyOverride };
   }
