@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { HybridRetriever } from "../../src/application/hybrid-retriever.js";
+import type { RetrievalOptions } from "../../src/application/hybrid-retriever.js";
 import type { VectorStore } from "../../src/application/ports/vector-store.js";
 import { createTestStores, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
 
 let stores: ReturnType<typeof createTestStores>;
 let embeddings: KeywordEmbeddings;
 
-const baseOptions = { topK: 3, minScore: 0.2, semanticLimit: 10, lexicalLimit: 10, contextMaxChars: 10_000, rrfK: undefined as number | undefined };
+const baseOptions: RetrievalOptions = { topK: 3, minScore: 0.2, semanticLimit: 10, lexicalLimit: 10, contextMaxChars: 10_000, rrfK: undefined };
 
-function createRetriever(overrides: Partial<typeof baseOptions> = {}, vectorStore: VectorStore = stores.vectorStore) {
+function createRetriever(overrides: Partial<RetrievalOptions> = {}, vectorStore: VectorStore = stores.vectorStore) {
   // A clock that advances 5ms per reading makes every stage duration deterministic.
   let tick = 0;
   return new HybridRetriever({
@@ -209,5 +210,132 @@ describe("HybridRetriever", () => {
     expect(result.chunks).toHaveLength(1); // the exact duplicate was skipped
     expect(result.candidates[0].content).toBe(same);
     expect(result.candidates.map((chunk) => chunk.ranking.fusedRank)).toEqual([1, 2]);
+  });
+});
+
+describe("HybridRetriever confidence gate", () => {
+  const policy = { minSemanticScore: 0.8, minTermCoverage: 0.9, requireKnownIdentifiers: true };
+
+  it("without a policy every retrieval that found candidates is allowed through", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps"]);
+
+    const result = await retrieve(createRetriever(), "cat");
+
+    expect(result.confidence).toMatchObject({ decision: "answer" });
+    expect(result.chunks).toHaveLength(1);
+  });
+
+  it("hands the model nothing when the evidence is weak, but still reports the candidates and the signals", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps on the sofa all day long and purrs"]);
+
+    const result = await retrieve(createRetriever({ confidence: policy }), "cat tax space dog");
+
+    expect(result.confidence).toMatchObject({ decision: "abstain", reason: "weak-evidence" });
+    expect(result.chunks).toEqual([]);
+    expect(result.trace.counts.selected).toBe(0);
+    expect(result.trace.contextChars).toBe(0);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.signals.candidateCount).toBe(1);
+  });
+
+  it("passes strong evidence through", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps"]);
+
+    const result = await retrieve(createRetriever({ confidence: { ...policy, minSemanticScore: 0.5 } }), "cat");
+
+    expect(result.confidence).toMatchObject({ decision: "answer", reason: "semantic" });
+    expect(result.chunks).toHaveLength(1);
+  });
+
+  it("abstains on nothing at all, without a reason that blames the policy", async () => {
+    const result = await retrieve(createRetriever({ confidence: policy }), "cat?");
+
+    expect(result.confidence).toMatchObject({ decision: "abstain", reason: "no-candidates" });
+  });
+
+  it("abstains when the question names an identifier that the user's documents do not contain", async () => {
+    await index("user-1", "doc-1", "ops.md", ["the cat sleeps; ECONNRESET is raised by the proxy"]);
+
+    const result = await retrieve(createRetriever({ confidence: { ...policy, minSemanticScore: 0.1 } }), "cat ECONNREFUSED");
+
+    expect(result.confidence).toMatchObject({ decision: "abstain", reason: "identifier-not-found" });
+    expect(result.chunks).toEqual([]);
+  });
+
+  it("never counts another user's evidence: the exact token and the strong match live in someone else's documents", async () => {
+    await index("user-2", "doc-2", "ops.md", ["cat cat cat ECONNRESET ECONNRESET cat"]);
+    await index("user-1", "doc-1", "other.md", ["tax rules and nothing else"]);
+
+    const result = await retrieve(createRetriever({ confidence: { ...policy, minSemanticScore: 0.5 } }), "cat ECONNRESET");
+
+    expect(result.confidence.decision).toBe("abstain");
+    expect(result.signals).toMatchObject({ exactTargetsFound: 0, topSemanticScore: null });
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("ranks without selecting: rank() describes the evidence and loads candidates but builds no context", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps", "cat cat"]);
+
+    const ranked = await createRetriever().rank({ userId: "user-1", question: "cat" });
+
+    expect(ranked.candidates.map((chunk) => chunk.chunkId).sort()).toEqual(["doc-1-0", "doc-1-1"]);
+    expect(ranked.signals.candidateCount).toBe(2);
+    expect(ranked).not.toHaveProperty("chunks");
+  });
+});
+
+describe("HybridRetriever exact-token bonus", () => {
+  it("lifts the chunk that contains the identifier above chunks that merely sit close in meaning", async () => {
+    await index("user-1", "doc-1", "docs.md", [
+      "the cat sleeps",
+      "cat cat cat cat cat", // semantically the closest
+      "cat tax cat tax", // also found by both rankings
+      "Error code E-4012 means low battery", // lexical only: no embedding keyword
+    ]);
+
+    const plain = await retrieve(createRetriever({ topK: 4 }), "cat E-4012");
+    const boosted = await retrieve(createRetriever({ topK: 4, exactTokenBonus: 1 }), "cat E-4012");
+
+    expect(plain.candidates.findIndex((chunk) => chunk.content.includes("E-4012"))).toBeGreaterThan(0);
+    expect(boosted.candidates[0].content).toContain("E-4012");
+    expect(boosted.candidates[0].ranking).toMatchObject({ fusedRank: 1, exactMatches: 1 });
+  });
+
+  it("does nothing when the question contains no identifier", async () => {
+    await index("user-1", "doc-1", "docs.md", ["the cat sleeps", "cat cat cat", "Error code E-4012 means low battery"]);
+
+    const plain = await retrieve(createRetriever(), "where is the cat");
+    const boosted = await retrieve(createRetriever({ exactTokenBonus: 1 }), "where is the cat");
+
+    expect(boosted.candidates.map((chunk) => chunk.chunkId)).toEqual(plain.candidates.map((chunk) => chunk.chunkId));
+  });
+});
+
+describe("HybridRetriever weighted fusion", () => {
+  it("lets the lexical ranking count more when weighted", async () => {
+    await index("user-1", "doc-1", "docs.md", ["cat cat cat", "Error ECONNRESET upstream"]);
+
+    const plain = await retrieve(createRetriever(), "cat ECONNRESET");
+    const weighted = await retrieve(createRetriever({ lexicalWeight: 3 }), "cat ECONNRESET");
+
+    expect(weighted.candidates[0].ranking.fusedScore).toBeGreaterThan(plain.candidates[0].ranking.fusedScore);
+  });
+});
+
+describe("HybridRetriever: evidence is measured on the asking user's loaded chunks only", () => {
+  it("ignores match lists that name chunks of another user (a store bug must not leak into confidence)", async () => {
+    await index("user-2", "doc-2", "secret.md", ["cat cat cat ECONNRESET"]);
+    await index("user-1", "doc-1", "mine.md", ["tax rules and nothing else"]);
+    const [foreign] = await stores.vectorStore.searchLexical({ userId: "user-2", query: "ECONNRESET", limit: 5 });
+    const leaky = Object.assign(Object.create(stores.vectorStore) as VectorStore, {
+      searchLexical: async () => [foreign],
+      searchSimilar: async () => [{ ...foreign, score: 0.99 }],
+    });
+
+    const result = await retrieve(createRetriever({ confidence: { minSemanticScore: 0.5, minTermCoverage: 0.6, requireKnownIdentifiers: true } }, leaky), "cat ECONNRESET");
+
+    expect(result.candidates).toEqual([]);
+    expect(result.signals).toMatchObject({ candidateCount: 0, semanticCount: 0, lexicalCount: 0, topSemanticScore: null, topLexicalScore: null, exactTargetsFound: 0 });
+    expect(result.confidence).toMatchObject({ decision: "abstain", reason: "no-candidates" });
   });
 });

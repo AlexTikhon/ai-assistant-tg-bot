@@ -258,3 +258,35 @@ describe("RechunkDocumentUseCase: a failure leaves the previous index fully inta
     await expect(createRechunk().execute("user-1", "missing")).rejects.toThrow(NotFoundError);
   });
 });
+
+describe("re-chunking and provenance", () => {
+  const markdown = "# Authentication\n\nIntro to authentication.\n\n## Refresh tokens\n\nRefresh tokens last for thirty days and can be rotated at any time by the caller.";
+
+  it("gives a Markdown document indexed before section paths its sections, without touching anything else", async () => {
+    const id = await ingest("api.md", markdown);
+    // As if it had been indexed by the previous release: no section paths, the old extractor recipe.
+    stores.db.prepare("UPDATE document_chunks SET section_path = NULL").run();
+
+    await createRechunk({ chunkSize: 80 }).execute("user-1", id);
+
+    const paths = (stores.db.prepare("SELECT section_path AS s FROM document_chunks ORDER BY chunk_index").all() as Array<{ s: string | null }>).map((row) =>
+      row.s ? (JSON.parse(row.s) as string[]).join(" > ") : null,
+    );
+    expect(paths).toContain("Authentication > Refresh tokens");
+    expect(paths.filter(Boolean).length).toBeGreaterThan(0);
+    expect((await profileOf(id))?.extractorVersion).toBe("markdown-sections-v1");
+  });
+
+  it("keeps page provenance for PDFs and gives them no section path", async () => {
+    const id = await ingest("manual.pdf", `first page text${PAGE_BREAK}second page text`);
+
+    await createRechunk({ chunkSize: 30 }).execute("user-1", id);
+
+    const rows = stores.db.prepare("SELECT page_start AS s, page_end AS e, section_path AS p FROM document_chunks ORDER BY chunk_index").all() as Array<{
+      s: number | null;
+      e: number | null;
+      p: string | null;
+    }>;
+    expect(rows.every((row) => row.s !== null && row.e !== null && row.p === null)).toBe(true);
+  });
+});

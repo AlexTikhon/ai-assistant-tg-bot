@@ -1,0 +1,13 @@
+{
+  "_comment": "Ranking variants for `npm run eval:retrieval -- --compare eval/comparisons/ranking.json` (docs/evaluation.md, 'Ranking experiments'). The first entry is plain RRF, the reference. The variants differ only in how candidates are ranked; the confidence policy is the same everywhere, so the false-positive / false-negative columns show how each ranking feeds the gate. Weights and the exact-token bonus are in units of the best single-ranking contribution 1/(k+1). Calibration decides; validation is only reported.",
+  "configs": [
+    { "name": "A rrf", "semanticWeight": 1, "lexicalWeight": 1, "exactTokenBonus": 0 },
+    { "name": "B lexical x1.5", "lexicalWeight": 1.5, "exactTokenBonus": 0 },
+    { "name": "B lexical x2", "lexicalWeight": 2, "exactTokenBonus": 0 },
+    { "name": "B semantic x1.5", "semanticWeight": 1.5, "exactTokenBonus": 0 },
+    { "name": "C bonus 0.5", "exactTokenBonus": 0.5 },
+    { "name": "C bonus 1", "exactTokenBonus": 1 },
+    { "name": "C bonus 2", "exactTokenBonus": 2 },
+    { "name": "B+C lex x1.5 + bonus 1", "lexicalWeight": 1.5, "exactTokenBonus": 1 }
+  ]
+}

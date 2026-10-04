@@ -217,6 +217,20 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 6,
+    name: "optional provenance per chunk: Markdown section path, printed PDF page labels",
+    up(db) {
+      // All nullable and unfilled for existing rows: a chunk indexed earlier simply has no section or label until
+      // its document is re-chunked (the index profile reports that as an extractor change).
+      // section_path is a JSON array of heading titles; the labels are the printed page labels at page_start / page_end.
+      db.exec(`
+        ALTER TABLE document_chunks ADD COLUMN section_path TEXT;
+        ALTER TABLE document_chunks ADD COLUMN page_label_start TEXT;
+        ALTER TABLE document_chunks ADD COLUMN page_label_end TEXT;
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1].version;

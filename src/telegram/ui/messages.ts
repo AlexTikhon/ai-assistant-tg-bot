@@ -23,4 +23,6 @@ export const messages = {
   deleteUsage: "Use /delete <documentId>.",
   voiceMissing: "Voice payload is missing.",
   voiceNotRecognized: "Could not transcribe the voice message.",
+  // Said when the documents hold too little evidence. Deliberately modest: it does not claim the answer does not exist.
+  insufficientEvidence: "I couldn't find enough information in your uploaded documents to answer that.",
 };

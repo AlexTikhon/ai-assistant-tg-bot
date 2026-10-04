@@ -67,3 +67,37 @@ describe("reciprocalRankFusion", () => {
     expect(item.semanticScore).toBe(0.83);
   });
 });
+
+describe("weighted reciprocal rank fusion", () => {
+  it("is plain RRF with the default weights", () => {
+    const semantic = [match("a"), match("b")];
+    const lexical = [match("b"), match("c")];
+
+    expect(reciprocalRankFusion(semantic, lexical, 60, { semantic: 1, lexical: 1 })).toEqual(
+      reciprocalRankFusion(semantic, lexical, 60),
+    );
+  });
+
+  it("scales each list's contribution by its weight", () => {
+    const fused = reciprocalRankFusion([match("a")], [match("b")], 60, { semantic: 1, lexical: 2 });
+
+    expect(fused.map((item) => item.chunkId)).toEqual(["b", "a"]);
+    expect(fused[0].fusedScore).toBeCloseTo(2 / 61);
+    expect(fused[1].fusedScore).toBeCloseTo(1 / 61);
+  });
+
+  it("cannot overturn agreement of both lists with moderate weights: at k=60 rank differences are tiny", () => {
+    // b is semantic rank 1 only; a is found by both lists at rank 2 / rank 2.
+    const semantic = [match("b"), match("a")];
+    const lexical = [match("c"), match("a")];
+
+    expect(reciprocalRankFusion(semantic, lexical)[0].chunkId).toBe("a");
+    expect(reciprocalRankFusion(semantic, lexical, 60, { semantic: 3, lexical: 1 })[0].chunkId).toBe("a");
+  });
+
+  it("rejects weights that are negative, non-finite or all zero", () => {
+    expect(() => reciprocalRankFusion([], [], 60, { semantic: -1, lexical: 1 })).toThrow(RangeError);
+    expect(() => reciprocalRankFusion([], [], 60, { semantic: Number.NaN, lexical: 1 })).toThrow(RangeError);
+    expect(() => reciprocalRankFusion([], [], 60, { semantic: 0, lexical: 0 })).toThrow(RangeError);
+  });
+});

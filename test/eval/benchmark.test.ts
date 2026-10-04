@@ -61,6 +61,8 @@ describe("runBenchmark", () => {
         "FTS (common terms)",
         "RRF fusion",
         "context selection",
+        "exact-token bonus",
+        "evidence signals + gate",
       ]);
       for (const stage of result.stages) {
         expect(stage.medianMs).toBeGreaterThanOrEqual(0);

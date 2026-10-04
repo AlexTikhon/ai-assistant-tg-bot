@@ -41,7 +41,7 @@ export async function checkIndexCompatibility(
       { embeddingModel: recipe.embeddingModel, chunkSize: recipe.chunkSize, chunkOverlap: recipe.chunkOverlap, ...result },
       "Some documents were indexed with a different recipe than the configured one. Outdated embeddings are " +
         "skipped by semantic search until re-indexed (`npm run reindex`); a different chunk layout or extraction " +
-        "(e.g. PDFs without page numbers) is rebuilt from the original files with `npm run reindex -- --rechunk`. " +
+        "(e.g. PDFs without page numbers, Markdown without sections) is rebuilt from the original files with `npm run reindex -- --rechunk`. " +
         "Add --dry-run to see why each document is stale.",
     );
   }

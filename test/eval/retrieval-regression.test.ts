@@ -5,14 +5,17 @@ import { splitText } from "../../src/core/text-splitter.js";
 import { checkBaseline, parseBaseline } from "../../src/eval/baseline.js";
 import { compareConfigs } from "../../src/eval/compare.js";
 import type { EvalSettings } from "../../src/eval/compare.js";
-import { parseDataset } from "../../src/eval/dataset.js";
+import { buildCalibrationReport } from "../../src/eval/calibrate.js";
+import { DEFAULT_CONFIDENCE_POLICY, PASS_THROUGH_POLICY } from "../../src/core/retrieval-confidence.js";
+import { describeDataset, parseDatasetFile } from "../../src/eval/dataset.js";
 import { loadCorpus } from "../../src/eval/harness.js";
 import { LexiconEmbeddings } from "../../src/eval/lexicon-embeddings.js";
 import { REPO_ROOT } from "./support.js";
 
 const eval_ = (...parts: string[]) => path.join(REPO_ROOT, "eval", ...parts);
 const corpus = loadCorpus(eval_("corpus"));
-const cases = parseDataset(fs.readFileSync(eval_("datasets", "retrieval.jsonl"), "utf-8"));
+const dataset = parseDatasetFile(fs.readFileSync(eval_("datasets", "retrieval.jsonl"), "utf-8"));
+const cases = dataset.cases;
 const baseline = parseBaseline(fs.readFileSync(eval_("baseline.json"), "utf-8"));
 const lexicon = JSON.parse(fs.readFileSync(eval_("embedding-lexicon.json"), "utf-8")) as { concepts: Record<string, string[]> };
 
@@ -31,13 +34,48 @@ async function evaluate(overrides: Partial<EvalSettings> = {}) {
 
 describe("the evaluation dataset", () => {
   it("is a meaningful size and covers every scenario it is meant to cover", () => {
-    expect(cases.length).toBeGreaterThanOrEqual(15);
-    expect(cases.length).toBeLessThanOrEqual(35);
+    expect(cases.length).toBeGreaterThanOrEqual(40);
+    expect(cases.length).toBeLessThanOrEqual(80);
     const tags = new Set(cases.flatMap((item) => item.tags));
-    for (const required of ["paraphrase", "exact-term", "error-code", "file-reference", "split-info", "ambiguous", "multi-document", "no-answer", "isolation"]) {
+    for (const required of ["paraphrase", "semantic-only", "exact-term", "error-code", "file-reference", "version", "quoted-phrase", "short-query", "split-info", "ambiguous", "multi-document", "no-answer", "isolation"]) {
       expect(tags, `missing scenario "${required}"`).toContain(required);
     }
     expect(cases.some((item) => item.expectedSources.length > 1)).toBe(true);
+  });
+
+  it("has an explicit version, so that metrics of different dataset versions are never compared by accident", () => {
+    expect(dataset.version).toBe(2);
+    expect(dataset.description).toBeTruthy();
+  });
+
+  it("has enough unanswerable questions of every kind to calibrate an answerability gate", () => {
+    const unanswerable = cases.filter((item) => !item.answerable);
+
+    expect(unanswerable.length).toBeGreaterThanOrEqual(12);
+    expect(unanswerable.length).toBeLessThanOrEqual(20);
+    for (const kind of ["unrelated", "missing-fact", "similar-terms", "wrong-entity", "missing-file", "missing-identifier", "cross-user"]) {
+      expect(unanswerable.some((item) => item.tags.includes(kind)), `no unanswerable question of kind "${kind}"`).toBe(true);
+    }
+    expect(unanswerable.every((item) => item.tags.includes("no-answer") || item.tags.includes("isolation"))).toBe(true);
+  });
+
+  it("splits into calibration and validation by hand: both splits contain answerable and unanswerable questions", () => {
+    const description = describeDataset(cases);
+
+    for (const split of ["calibration", "validation"] as const) {
+      expect(description.bySplit[split].answerable, `${split} has no answerable question`).toBeGreaterThanOrEqual(8);
+      expect(description.bySplit[split].unanswerable, `${split} has no unanswerable question`).toBeGreaterThanOrEqual(4);
+    }
+    const validationShare = description.bySplit.validation.queries / description.queries;
+    expect(validationShare).toBeGreaterThan(0.25);
+    expect(validationShare).toBeLessThan(0.4);
+  });
+
+  it("keeps an unanswerable question unanswerable for the asking user even where another user could answer it", () => {
+    const crossUser = cases.filter((item) => item.tags.includes("cross-user"));
+
+    expect(crossUser.length).toBeGreaterThanOrEqual(3);
+    expect(crossUser.every((item) => !item.answerable && item.expectedSources.length === 0)).toBe(true);
   });
 
   it("only refers to documents that exist for the user who asks, and to text they really contain", () => {
@@ -92,6 +130,36 @@ describe("the retrieval regression check", () => {
     expect(verdict.checks.filter((check) => !check.ok)).toEqual([]);
     expect(verdict.passed).toBe(true);
     expect(report.isolationViolations).toBe(0);
+  });
+
+  it("ships the confidence policy that calibration chooses - a changed dataset or retrieval means re-calibrating on purpose", async () => {
+    const report = await evaluate();
+    const calibration = buildCalibrationReport(
+      report.cases.map((item) => ({ id: item.id, answerable: item.answerable, split: item.split, signals: item.signals })),
+      DEFAULT_CONFIDENCE_POLICY,
+      { minRecall: 0.9 },
+    );
+
+    expect(calibration.committedIsChosen, `calibration now prefers ${JSON.stringify(calibration.chosen.policy)}; run npm run eval:confidence`).toBe(true);
+  });
+
+  it("fails when the confidence gate lets everything through (the unanswerable questions reach the model)", async () => {
+    const verdict = checkBaseline(await evaluate({ confidence: PASS_THROUGH_POLICY }), baseline);
+
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks.filter((check) => !check.ok).map((check) => check.metric)).toContain("answerabilitySpecificity");
+  });
+
+  it("fails when the gate stops checking that a named identifier exists", async () => {
+    const verdict = checkBaseline(await evaluate({ confidence: { ...DEFAULT_CONFIDENCE_POLICY, requireKnownIdentifiers: false } }), baseline);
+
+    expect(verdict.checks.filter((check) => !check.ok).map((check) => check.metric)).toContain("missing-identifier/answerabilitySpecificity");
+  });
+
+  it("fails when the exact-token bonus is switched off (an exact lexical hit loses to mediocre dual-method candidates again)", async () => {
+    const verdict = checkBaseline(await evaluate({ exactTokenBonus: 0 }), baseline);
+
+    expect(verdict.passed).toBe(false);
   });
 
   it("fails when the full-text path is broken (keyword search returns nothing)", async () => {

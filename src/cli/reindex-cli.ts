@@ -15,7 +15,7 @@ Usage: npm run reindex -- [options]
   (no options)        re-embed documents whose vectors are outdated (other model, wrong dimension, unreadable);
                       keeps their chunks. Other kinds of staleness are only reported.
   --rechunk           also rebuild documents with a different chunk size/overlap/algorithm or extraction
-                      (e.g. PDFs without page numbers) from their original files
+                      (e.g. PDFs without page numbers, Markdown without sections) from their original files
   --all               every document (re-embed; with --rechunk: re-chunk)
   --document <id>     one document
   --dry-run           show which documents are stale and why, and what would be done

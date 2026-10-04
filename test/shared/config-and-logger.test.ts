@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CONFIDENCE_POLICY } from "../../src/core/retrieval-confidence.js";
 import { loadConfig, loadToolConfig, openAiConfig, telegramConfig } from "../../src/config/config.js";
 import { scrubSecrets } from "../../src/shared/logger.js";
 import { normalizeText } from "../../src/shared/utils/text.js";
@@ -22,6 +23,8 @@ describe("loadConfig", () => {
       lexicalLimit: 20,
       rrfK: 60,
       contextMaxChars: 6000,
+      exactTokenBonus: 1,
+      confidence: { minSemanticScore: 0.5, minTermCoverage: 0.6, requireKnownIdentifiers: true },
     });
     expect(config.limits).toEqual({
       maxDocumentsPerUser: 100,
@@ -89,6 +92,44 @@ describe("scrubSecrets", () => {
 describe("normalizeText", () => {
   it("keeps paragraph structure while cleaning whitespace and NUL bytes", () => {
     expect(normalizeText("﻿a \t b\u0000\r\n\r\n\r\n\r\nc  \n d")).toBe("a b\n\nc\nd");
+  });
+});
+
+describe("retrieval confidence settings", () => {
+  it("reads the two thresholds and the exact-token bonus", () => {
+    const config = loadToolConfig({
+      RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: "0.35",
+      RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: "0.8",
+      RETRIEVAL_EXACT_TOKEN_BONUS: "0",
+    });
+
+    expect(config.retrieval.confidence).toEqual({ minSemanticScore: 0.35, minTermCoverage: 0.8, requireKnownIdentifiers: true });
+    expect(config.retrieval.exactTokenBonus).toBe(0);
+  });
+
+  it("ships the same defaults as the calibrated policy in core", () => {
+    expect(loadToolConfig({}).retrieval.confidence).toEqual(DEFAULT_CONFIDENCE_POLICY);
+  });
+
+  it("can switch the gate off completely, which leaves no policy at all", () => {
+    const config = loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "false" });
+
+    expect(config.retrieval.confidence).toBeUndefined();
+  });
+
+  it("rejects thresholds that cannot mean anything, naming the variable", () => {
+    expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: "1.5" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE/);
+    expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: "high" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE/);
+    expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: "-0.1" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE/);
+    expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: "1.2" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE/);
+    expect(() => loadToolConfig({ RETRIEVAL_EXACT_TOKEN_BONUS: "-1" })).toThrow(/RETRIEVAL_EXACT_TOKEN_BONUS/);
+    expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "maybe" })).toThrow(/RETRIEVAL_CONFIDENCE_GATE/);
+  });
+
+  it("reports all invalid retrieval settings at once", () => {
+    expect(() =>
+      loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: "9", RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: "9" }),
+    ).toThrow(/MIN_SEMANTIC_SCORE[\s\S]*MIN_TERM_COVERAGE/);
   });
 });
 

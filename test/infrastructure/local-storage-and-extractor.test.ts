@@ -86,6 +86,33 @@ describe("FileTextExtractor", () => {
     expect(pages?.some((page) => /-- \d+ of \d+ --/.test(page.text))).toBe(false);
   });
 
+  it("does not report printed page labels, even when the PDF declares them: pdf-parse gets them wrong", async () => {
+    const { pages } = await extractor.extract(
+      input("front-matter.pdf", buildPdf(["Preface", "Preface two", "Chapter one"], { labels: [{ page: 0, style: "r" }, { page: 2, style: "D" }] })),
+    );
+
+    expect(pages?.map((page) => page.pageNumber)).toEqual([1, 2, 3]);
+    expect(pages?.every((page) => page.label === undefined)).toBe(true);
+  });
+
+  // CANARY. pdf-parse 2.4.5 indexes pdf.js's 0-based page label list with the 1-based page number, so every label
+  // belongs to the page before the one it is reported on (and the last page has none). That is why the extractor
+  // above does not use it. If this test fails, pdf-parse was fixed: read labels in file-text-extractor.ts, bump
+  // PDF_EXTRACTOR_VERSION and replace this canary with a test of the real labels.
+  it("canary: pdf-parse still reports page labels shifted by one page", async () => {
+    const { PDFParse } = await import("pdf-parse");
+    const parser = new PDFParse({
+      data: new Uint8Array(buildPdf(["Preface", "Preface two", "Chapter one", "Chapter two"], { labels: [{ page: 0, style: "r" }, { page: 2, style: "D" }] })),
+    });
+    try {
+      const info = await parser.getInfo({ parsePageInfo: true });
+      // The file's true labels are i, ii, 1, 2 for physical pages 1-4.
+      expect(info.pages.map((page) => page.pageLabel ?? null)).toEqual(["ii", "1", "2", null]);
+    } finally {
+      await parser.destroy();
+    }
+  });
+
   it("has no page information for text files", async () => {
     expect((await extractor.extract(input("a.md", Buffer.from("x")))).pages).toBeUndefined();
   });

@@ -5,6 +5,8 @@ import type { FileStorage } from "../application/ports/file-storage.js";
 import type { DocumentTextExtractor } from "../application/ports/text-extractor.js";
 import type { VectorStore } from "../application/ports/vector-store.js";
 import { IngestDocumentUseCase } from "../application/use-cases/ingest-document.use-case.js";
+import { buildIndexProfile, indexFingerprint } from "../core/index-profile.js";
+import type { IndexProfile } from "../core/index-profile.js";
 import { openDatabase } from "../infrastructure/sqlite/database.js";
 import { SqliteDocumentRepository } from "../infrastructure/sqlite/sqlite-document-repository.js";
 import { SqliteVectorStore } from "../infrastructure/sqlite/sqlite-vector-store.js";
@@ -21,6 +23,11 @@ export type EvalIndex = {
   owners: ReadonlyMap<string, string>;
   /** Chunks stored for the whole corpus. */
   chunkCount: number;
+  /** Documents indexed. */
+  documentCount: number;
+  /** The recipe the corpus was indexed with (Markdown files), and its short identity: metrics are only comparable between equal fingerprints. */
+  profile: IndexProfile;
+  fingerprint: string;
   close(): void;
 };
 
@@ -111,7 +118,24 @@ export async function buildEvalIndex(
       chunkCount += result.chunksCount;
     }
 
-    return { vectorStore: new SqliteVectorStore(db), owners, chunkCount, close: () => db.close() };
+    const stored = db.prepare("SELECT embedding_dim AS dimension FROM document_chunks LIMIT 1").get() as { dimension: number } | undefined;
+    const profile = buildIndexProfile({
+      fileName: "corpus.md",
+      embeddingModel: embeddings.model,
+      embeddingDimension: stored?.dimension ?? 0,
+      chunkSize: chunking.chunkSize,
+      chunkOverlap: chunking.chunkOverlap,
+    });
+
+    return {
+      vectorStore: new SqliteVectorStore(db),
+      owners,
+      chunkCount,
+      documentCount: corpus.length,
+      profile,
+      fingerprint: indexFingerprint(profile),
+      close: () => db.close(),
+    };
   } catch (error) {
     db.close();
     throw error;

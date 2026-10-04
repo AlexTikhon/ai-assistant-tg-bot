@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { EvalReport } from "./runner.js";
+import type { AnswerabilityMetrics } from "./answerability.js";
+import type { EvalReport, TagMetrics } from "./runner.js";
 
 const metric = z.number().min(0).max(1);
 
@@ -15,8 +16,22 @@ const baselineSchema = z.object({
     lexicalLimit: z.number().int().nonnegative(),
     rrfK: z.number().positive(),
     contextMaxChars: z.number().int().positive(),
+    semanticWeight: z.number().min(0).optional(),
+    lexicalWeight: z.number().min(0).optional(),
+    exactTokenBonus: z.number().min(0).optional(),
+    confidence: z
+      .object({
+        minSemanticScore: z.number().min(-1).max(1),
+        minTermCoverage: z.number().min(0).max(1),
+        requireKnownIdentifiers: z.boolean(),
+      })
+      .optional(),
   }),
-  /** Metric name -> lowest acceptable value: recallAtK, hitRateAtK, candidateRecallAtK, mrr, candidateMrr, termCoverage; "tag/metric" restricts a metric to one tag. */
+  /**
+   * Metric name -> lowest acceptable value: recallAtK, hitRateAtK, candidateRecallAtK, mrr, candidateMrr, termCoverage,
+   * and of the confidence gate answerabilityRecall, answerabilitySpecificity, answerabilityPrecision;
+   * "tag/metric" restricts a metric to one tag.
+   */
   minimums: z.record(z.string(), metric),
   /** Absolute slack below a minimum before a check fails; absorbs rounding and the effect of one flipped case. */
   tolerance: z.number().min(0).max(0.2).default(0.02),
@@ -59,7 +74,22 @@ function valueOf(report: EvalReport, name: string): number {
   return valueOfAggregate(report, metrics, name.slice(slash + 1));
 }
 
-function valueOfAggregate(report: EvalReport, overall: EvalReport["overall"], name: string): number {
+const GATE_METRICS: Record<string, keyof AnswerabilityMetrics> = {
+  answerabilityRecall: "recall",
+  answerabilitySpecificity: "specificity",
+  answerabilityPrecision: "precision",
+};
+
+function valueOfAggregate(report: EvalReport, overall: EvalReport["overall"] | TagMetrics, name: string): number {
+  const gateMetric = GATE_METRICS[name];
+  if (gateMetric) {
+    const gate = overall === report.overall ? report.answerability : (overall as TagMetrics).answerability;
+    const value = gate[gateMetric];
+    if (typeof value !== "number") {
+      throw new Error(`The baseline asks for ${name}, but this run has no questions of the kind it is computed from (no value).`);
+    }
+    return value;
+  }
   if (name === "mrr") return overall.mrr;
   if (name === "candidateMrr") return overall.candidateMrr;
   if (name === "termCoverage" && overall === report.overall) return report.termCoverage;

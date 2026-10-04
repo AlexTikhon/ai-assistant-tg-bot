@@ -1,12 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { ANSWER_QUESTION_SYSTEM_PROMPT } from "../../src/application/prompts/answer-question.prompt.js";
 import { HybridRetriever } from "../../src/application/hybrid-retriever.js";
-import {
-  AnswerQuestionUseCase,
-  MAX_QUESTION_CHARS,
-  NO_CONTEXT_ANSWER,
-} from "../../src/application/use-cases/answer-question.use-case.js";
-import { createTestStores, FakeChatModel, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
+import { AnswerQuestionUseCase, MAX_QUESTION_CHARS } from "../../src/application/use-cases/answer-question.use-case.js";
+import { answered, createTestStores, FakeChatModel, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
 
 let stores: ReturnType<typeof createTestStores>;
 let embeddings: KeywordEmbeddings;
@@ -65,21 +61,21 @@ describe("AnswerQuestionUseCase", () => {
 
     const result = await createUseCase().execute({ userId: "user-1", question: "What does the cat do?" });
 
-    expect(result).toEqual({ answer: NO_CONTEXT_ANSWER, sources: [], citations: { cited: [], removed: [] } });
+    expect(result).toStrictEqual({ kind: "insufficient-evidence", reason: "no-candidates" });
     expect(chatModel.calls).toHaveLength(0);
   });
 
   it("says the same for a user without documents", async () => {
     const result = await createUseCase().execute({ userId: "nobody", question: "cat?" });
 
-    expect(result.sources).toEqual([]);
+    expect(result.kind).toBe("insufficient-evidence");
     expect(chatModel.calls).toHaveLength(0);
   });
 
   it("returns structured sources mapped from the retrieved chunks", async () => {
     await index("user-1", "doc-1", "pets.pdf", ["the dog barks", "the cat sleeps", "cat cat cat"]);
 
-    const result = await createUseCase().execute({ userId: "user-1", question: "Where is the cat?" });
+    const result = answered(await createUseCase().execute({ userId: "user-1", question: "Where is the cat?" }));
 
     expect(result.answer).toBe("The cat sleeps. [1]");
     expect(result.sources.map((source) => [source.fileName, source.chunkIndex])).toEqual([
@@ -100,7 +96,7 @@ describe("AnswerQuestionUseCase", () => {
     await index("user-1", "doc-1", "a.txt", ["cat one"]);
     await index("user-1", "doc-2", "b.txt", ["cat two"]);
 
-    const result = await createUseCase().execute({ userId: "user-1", question: "cat?", documentId: "doc-2" });
+    const result = answered(await createUseCase().execute({ userId: "user-1", question: "cat?", documentId: "doc-2" }));
 
     expect(result.sources.map((source) => source.fileName)).toEqual(["b.txt"]);
   });
@@ -110,7 +106,7 @@ describe("AnswerQuestionUseCase", () => {
 
     const result = await createUseCase().execute({ userId: "user-1", question: "Tell me about the cat" });
 
-    expect(result).toMatchObject({ answer: NO_CONTEXT_ANSWER, sources: [] });
+    expect(result).toStrictEqual({ kind: "insufficient-evidence", reason: "no-candidates" });
     expect(chatModel.calls).toHaveLength(0);
   });
 
@@ -118,9 +114,9 @@ describe("AnswerQuestionUseCase", () => {
     await index("user-1", "doc-1", "old.txt", ["the cat sleeps"], "legacy-model");
 
     // No shared word with the text and the vectors are from another model: nothing may be returned.
-    expect((await createUseCase().execute({ userId: "user-1", question: "any feline here?" })).sources).toEqual([]);
+    expect((await createUseCase().execute({ userId: "user-1", question: "any feline here?" })).kind).toBe("insufficient-evidence");
     // A shared keyword still finds it (lexical search does not depend on the embedding model).
-    expect((await createUseCase().execute({ userId: "user-1", question: "cat?" })).sources).toHaveLength(1);
+    expect(answered(await createUseCase().execute({ userId: "user-1", question: "cat?" })).sources).toHaveLength(1);
   });
 
   it("sends role-separated messages: rules as system, excerpts and question as separate user messages", async () => {
@@ -163,7 +159,7 @@ describe("AnswerQuestionUseCase hybrid behaviour", () => {
   it("answers from a chunk that only matches an exact identifier", async () => {
     await index("user-1", "doc-1", "runbook.md", ["the cat sleeps", "Set FEATURE_FLAG_X=1 to enable the beta"]);
 
-    const result = await createUseCase().execute({ userId: "user-1", question: "What does FEATURE_FLAG_X do?" });
+    const result = answered(await createUseCase().execute({ userId: "user-1", question: "What does FEATURE_FLAG_X do?" }));
 
     expect(result.sources.map((source) => [source.fileName, source.chunkIndex])).toEqual([["runbook.md", 1]]);
     expect(chatModel.calls[0][1].content).toContain("FEATURE_FLAG_X=1");
@@ -213,6 +209,19 @@ describe("AnswerQuestionUseCase observability", () => {
     expect(serialized).not.toMatch(/sk-|bot\d+:/);
   });
 
+  it("in debug mode also records why the evidence was judged sufficient: the reason and the signals, as numbers", async () => {
+    await index("user-1", "doc-1", "pets.pdf", [secretText]);
+    const log = createLog();
+
+    await createUseCase({ ragDebug: true }, log).execute({ userId: "user-1", question: "cat?" });
+
+    const debug = log.entries.find((entry) => entry.message === "RAG retrieval debug");
+    expect(debug?.fields).toMatchObject({
+      confidence: { decision: "answer", reason: expect.any(String), signals: expect.objectContaining({ candidateCount: 1 }) },
+    });
+    expect(JSON.stringify(debug)).not.toContain("BLUEBERRY");
+  });
+
   it("does not emit the debug entry unless debug mode is on", async () => {
     await index("user-1", "doc-1", "pets.pdf", [secretText]);
     const log = createLog();
@@ -237,5 +246,105 @@ describe("AnswerQuestionUseCase observability", () => {
     await createUseCase({}, log).execute({ userId: "nobody", question: "cat?" });
 
     expect(log.entries[0].fields).toMatchObject({ selected: 0, timings: expect.any(Object) });
+  });
+});
+
+describe("AnswerQuestionUseCase: abstaining on weak evidence", () => {
+  const policy = { minSemanticScore: 0.8, minTermCoverage: 0.9, requireKnownIdentifiers: true };
+
+  function createGatedUseCase(log: TestLog = createLog()) {
+    return new AnswerQuestionUseCase({
+      retriever: new HybridRetriever({
+        embeddings,
+        vectorStore: stores.vectorStore,
+        options: { ...retrievalOptions, confidence: policy },
+      }),
+      chatModel,
+      log,
+    });
+  }
+
+  it("answers when the evidence is strong, and calls the chat model exactly once", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps"]);
+
+    const result = answered(await createGatedUseCase().execute({ userId: "user-1", question: "cat" }));
+
+    expect(result.sources).toHaveLength(1);
+    expect(chatModel.calls).toHaveLength(1);
+  });
+
+  it("abstains on weak evidence without calling the chat model", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps on the sofa all day"]);
+
+    const result = await createGatedUseCase().execute({ userId: "user-1", question: "cat tax dog space" });
+
+    expect(result).toStrictEqual({ kind: "insufficient-evidence", reason: "weak-evidence" });
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it("abstains on a question that has nothing to do with the documents", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps"]);
+
+    const result = await createGatedUseCase().execute({ userId: "user-1", question: "Who won the football match yesterday?" });
+
+    expect(result.kind).toBe("insufficient-evidence");
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it("abstains when the question names an identifier that the documents do not contain, although the topic matches", async () => {
+    await index("user-1", "doc-1", "ops.md", ["the cat sleeps; ECONNRESET is raised by the proxy"]);
+
+    const result = await createGatedUseCase().execute({ userId: "user-1", question: "cat ECONNREFUSED" });
+
+    expect(result).toStrictEqual({ kind: "insufficient-evidence", reason: "identifier-not-found" });
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it("abstains when the only evidence belongs to another user", async () => {
+    await index("user-2", "doc-2", "ops.md", ["cat cat cat ECONNRESET"]);
+
+    const result = await createGatedUseCase().execute({ userId: "user-1", question: "cat ECONNRESET" });
+
+    expect(result.kind).toBe("insufficient-evidence");
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it("does not ask the chat model even when it would fail: an abstention is final and costs nothing", async () => {
+    chatModel = new FakeChatModel(() => {
+      throw new Error("the chat model must not be called");
+    });
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps on the sofa all day"]);
+
+    await expect(createGatedUseCase().execute({ userId: "user-1", question: "cat tax dog space" })).resolves.toMatchObject({
+      kind: "insufficient-evidence",
+    });
+  });
+
+  it("returns no sources, no citations and no answer text on abstention", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps on the sofa all day"]);
+
+    const result = await createGatedUseCase().execute({ userId: "user-1", question: "cat tax dog space" });
+
+    expect(Object.keys(result).sort()).toEqual(["kind", "reason"]);
+  });
+
+  it("logs why it abstained - the reason and the evidence numbers - without the question or any document text", async () => {
+    await index("user-1", "doc-1", "pets.md", ["the cat sleeps on the sofa; internal codename BLUEBERRY-7781"]);
+    const log = createLog();
+
+    await createGatedUseCase(log).execute({ userId: "user-1", question: "cat tax dog space" });
+
+    const entry = log.entries.find((item) => item.message === "Question not answered: insufficient evidence");
+    expect(entry?.fields).toMatchObject({
+      userId: "user-1",
+      reason: "weak-evidence",
+      selected: 0,
+      signals: expect.objectContaining({ candidateCount: 1, topSemanticScore: expect.any(Number) }),
+      timings: expect.any(Object),
+    });
+    expect(entry?.fields).not.toHaveProperty("generationMs");
+    const serialized = JSON.stringify(log.entries);
+    expect(serialized).not.toContain("BLUEBERRY");
+    expect(serialized).not.toContain("cat tax dog space");
   });
 });

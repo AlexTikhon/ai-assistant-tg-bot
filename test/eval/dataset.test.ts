@@ -1,59 +1,138 @@
 import { describe, expect, it } from "vitest";
-import { findMatchRanks, matchesExpectedSource, parseDataset } from "../../src/eval/dataset.js";
+import { describeDataset, findMatchRanks, matchesExpectedSource, parseDataset, parseDatasetFile } from "../../src/eval/dataset.js";
 import type { ExpectedSource } from "../../src/eval/dataset.js";
 
 const line = (value: unknown) => JSON.stringify(value);
 
-describe("parseDataset", () => {
-  it("reads JSON lines, ignoring blank lines and # comments, and applies defaults", () => {
-    const cases = parseDataset(
+const header = line({ dataset: { version: 3, description: "unit test" } });
+const answerableCase = (extra: Record<string, unknown> = {}) => ({
+  id: "a",
+  split: "calibration",
+  answerable: true,
+  question: "Why ECONNRESET?",
+  expectedSources: [{ document: "ops.md", contains: "ECONNRESET" }],
+  ...extra,
+});
+const noAnswerCase = (extra: Record<string, unknown> = {}) => ({
+  id: "n",
+  split: "validation",
+  answerable: false,
+  question: "Anything?",
+  expectedSources: [],
+  ...extra,
+});
+
+describe("parseDatasetFile", () => {
+  it("reads JSON lines, ignoring blank lines and # comments, applies defaults and returns the dataset version", () => {
+    const dataset = parseDatasetFile(
       [
         "# a comment",
-        line({ id: "a", question: "Why ECONNRESET?", expectedSources: [{ document: "ops.md", contains: "ECONNRESET" }] }),
+        header,
+        line(answerableCase()),
         "",
-        line({
-          id: "b",
-          user: "bob",
-          question: "Anything?",
-          expectedSources: [],
-          expectedTerms: ["x"],
-          tags: ["no-answer"],
-        }),
+        line(noAnswerCase({ id: "b", user: "bob", expectedTerms: ["x"], tags: ["no-answer"] })),
       ].join("\n"),
     );
 
-    expect(cases).toEqual([
+    expect(dataset.version).toBe(3);
+    expect(dataset.description).toBe("unit test");
+    expect(dataset.cases).toEqual([
       {
         id: "a",
         user: "alice",
+        split: "calibration",
+        answerable: true,
         question: "Why ECONNRESET?",
         expectedSources: [{ document: "ops.md", contains: "ECONNRESET" }],
         expectedTerms: [],
         tags: [],
       },
-      { id: "b", user: "bob", question: "Anything?", expectedSources: [], expectedTerms: ["x"], tags: ["no-answer"] },
+      {
+        id: "b",
+        user: "bob",
+        split: "validation",
+        answerable: false,
+        question: "Anything?",
+        expectedSources: [],
+        expectedTerms: ["x"],
+        tags: ["no-answer"],
+      },
     ]);
   });
 
-  it("names the line of an invalid case", () => {
-    const text = [line({ id: "ok", question: "q", expectedSources: [] }), "{not json", line({ id: "x" })].join("\n");
+  it("requires exactly one dataset header with a positive integer version", () => {
+    expect(() => parseDatasetFile(line(answerableCase()))).toThrow(/header/i);
+    expect(() => parseDatasetFile([header, header, line(answerableCase())].join("\n"))).toThrow(/more than one/i);
+    expect(() => parseDatasetFile([line({ dataset: { version: 0 } }), line(answerableCase())].join("\n"))).toThrow(/version/);
+    expect(() => parseDatasetFile([line({ dataset: { version: "2" } }), line(answerableCase())].join("\n"))).toThrow(/version/);
+  });
 
-    expect(() => parseDataset(text)).toThrow(/line 2/);
-    expect(() => parseDataset([line({ id: "ok", question: "q", expectedSources: [] }), line({ id: "x" })].join("\n"))).toThrow(
-      /line 2.*question/s,
+  it("makes every case declare whether it is answerable and which split it belongs to", () => {
+    const { answerable: _answerable, ...withoutAnswerable } = answerableCase();
+    const { split: _split, ...withoutSplit } = answerableCase();
+
+    expect(() => parseDatasetFile([header, line(withoutAnswerable)].join("\n"))).toThrow(/line 2.*answerable/s);
+    expect(() => parseDatasetFile([header, line(withoutSplit)].join("\n"))).toThrow(/line 2.*split/s);
+    expect(() => parseDatasetFile([header, line(answerableCase({ split: "test" }))].join("\n"))).toThrow(/split/);
+  });
+
+  it("keeps the answerable flag and the expected sources consistent", () => {
+    expect(() => parseDatasetFile([header, line(answerableCase({ expectedSources: [] }))].join("\n"))).toThrow(
+      /answerable.*expected source/is,
+    );
+    expect(() =>
+      parseDatasetFile([header, line(noAnswerCase({ expectedSources: [{ document: "ops.md", contains: "x" }] }))].join("\n")),
+    ).toThrow(/not answerable.*expected source|expected source.*not answerable/is);
+  });
+
+  it("names the line of an invalid case", () => {
+    const text = [header, line(noAnswerCase({ id: "ok" })), "{not json", line({ id: "x" })].join("\n");
+
+    expect(() => parseDatasetFile(text)).toThrow(/line 3/);
+    expect(() => parseDatasetFile([header, line(noAnswerCase({ id: "ok" })), line({ id: "x" })].join("\n"))).toThrow(
+      /line 3.*question/s,
     );
   });
 
   it("rejects duplicate ids and sources without any way to identify the chunk", () => {
-    const dup = line({ id: "same", question: "q", expectedSources: [] });
-    expect(() => parseDataset([dup, dup].join("\n"))).toThrow(/duplicate id "same"/i);
+    const dup = line(noAnswerCase({ id: "same" }));
+    expect(() => parseDatasetFile([header, dup, dup].join("\n"))).toThrow(/duplicate id "same"/i);
     expect(() =>
-      parseDataset(line({ id: "n", question: "q", expectedSources: [{ document: "ops.md" }] })),
+      parseDatasetFile([header, line(answerableCase({ expectedSources: [{ document: "ops.md" }] }))].join("\n")),
     ).toThrow(/contains|chunkHint/);
   });
 
   it("rejects an empty dataset", () => {
-    expect(() => parseDataset("# nothing here\n")).toThrow(/no cases/i);
+    expect(() => parseDatasetFile(`# nothing here\n${header}\n`)).toThrow(/no cases/i);
+  });
+
+  it("parseDataset returns only the cases", () => {
+    expect(parseDataset([header, line(noAnswerCase())].join("\n")).map((item) => item.id)).toEqual(["n"]);
+  });
+});
+
+describe("describeDataset", () => {
+  it("counts queries, answerable and unanswerable cases, in total and per split", () => {
+    const { cases } = parseDatasetFile(
+      [
+        header,
+        line(answerableCase({ id: "a1" })),
+        line(answerableCase({ id: "a2", split: "validation" })),
+        line(noAnswerCase({ id: "n1", split: "calibration" })),
+        line(noAnswerCase({ id: "n2" })),
+        line(noAnswerCase({ id: "n3" })),
+      ].join("\n"),
+    );
+
+    expect(describeDataset(cases)).toEqual({
+      queries: 5,
+      answerable: 2,
+      unanswerable: 3,
+      bySplit: {
+        calibration: { queries: 2, answerable: 1, unanswerable: 1 },
+        validation: { queries: 3, answerable: 1, unanswerable: 2 },
+      },
+    });
   });
 });
 

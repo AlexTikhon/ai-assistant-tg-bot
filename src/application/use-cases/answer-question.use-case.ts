@@ -1,6 +1,7 @@
 import { groundCitations } from "../../core/citations.js";
 import type { Citation } from "../../core/document.js";
 import type { RetrievedChunk } from "../../core/retrieval.js";
+import type { AbstainReason, ConfidenceAssessment, RetrievalSignals } from "../../core/retrieval-confidence.js";
 import { ValidationError } from "../../shared/errors.js";
 import { logger } from "../../shared/logger.js";
 import type { InfoLog, WarnLog } from "../../shared/logger.js";
@@ -9,7 +10,6 @@ import { buildAnswerMessages } from "../prompts/answer-question.prompt.js";
 import type { ChatModel } from "../ports/chat-model.js";
 
 export const MAX_QUESTION_CHARS = 2000;
-export const NO_CONTEXT_ANSWER = "I could not confirm the answer from the uploaded documents.";
 
 export type AnswerQuestionInput = {
   userId: string;
@@ -17,13 +17,24 @@ export type AnswerQuestionInput = {
   documentId?: string;
 };
 
-export type AnswerQuestionResult = {
-  /** The model's answer with references to non-existent sources removed. */
-  answer: string;
-  sources: Citation[];
-  /** Result of the deterministic [n] check: which sources the answer cites, and which invalid references were removed. */
-  citations: { cited: number[]; removed: number[] };
-};
+export type AnswerQuestionResult =
+  | {
+      kind: "answered";
+      /** The model's answer with references to non-existent sources removed. */
+      answer: string;
+      sources: Citation[];
+      /** Result of the deterministic [n] check: which sources the answer cites, and which invalid references were removed. */
+      citations: { cited: number[]; removed: number[] };
+    }
+  | {
+      /**
+       * The user's indexed documents do not hold enough evidence for the question. Decided before the chat model:
+       * no model was called, nothing was generated. It does not claim that the answer does not exist anywhere.
+       */
+      kind: "insufficient-evidence";
+      /** For logs and tests; the user is told only that not enough information was found. */
+      reason: AbstainReason;
+    };
 
 type Dependencies = {
   retriever: HybridRetriever;
@@ -57,47 +68,76 @@ export class AnswerQuestionUseCase {
       throw new ValidationError(`The question is too long (max ${MAX_QUESTION_CHARS} characters).`);
     }
 
-    const { chunks, trace } = await retriever.retrieve({
+    const { chunks, confidence, trace } = await retriever.retrieve({
       userId: input.userId,
       documentId: input.documentId,
       question,
     });
 
-    let answer = NO_CONTEXT_ANSWER;
-    let generationMs = 0;
-    let citations: AnswerQuestionResult["citations"] = { cited: [], removed: [] };
-    if (chunks.length > 0) {
-      const generationStart = performance.now();
-      const generated = await chatModel.complete(buildAnswerMessages(question, chunks));
-      generationMs = elapsedSince(generationStart);
-
-      // Only checks that [n] points at one of the excerpts the model was shown - not that it is right.
-      const grounded = groundCitations(generated, chunks.length);
-      answer = grounded.text;
-      citations = { cited: grounded.cited, removed: grounded.unknown };
-      if (grounded.unknown.length > 0) {
-        this.log.warn(
-          { userId: input.userId, removedReferences: grounded.unknown, sources: chunks.length },
-          "The answer cited sources that were not in the context; those references were removed",
-        );
-      }
+    // Weak evidence is not sent to the model in the hope that the prompt makes it refuse: the decision is made here,
+    // deterministically, before any paid generation.
+    if (confidence.decision === "abstain" || chunks.length === 0) {
+      const reason: AbstainReason = confidence.decision === "abstain" ? confidence.reason : "no-candidates";
+      this.logAbstention(input.userId, question, reason, confidence.signals, trace, elapsedSince(startedAt));
+      return { kind: "insufficient-evidence", reason };
     }
 
-    this.logRequest(input.userId, question, trace, chunks, { generationMs, durationMs: elapsedSince(startedAt) });
+    const generationStart = performance.now();
+    const generated = await chatModel.complete(buildAnswerMessages(question, chunks));
+    const generationMs = elapsedSince(generationStart);
+
+    // Only checks that [n] points at one of the excerpts the model was shown - not that it is right.
+    const grounded = groundCitations(generated, chunks.length);
+    if (grounded.unknown.length > 0) {
+      this.log.warn(
+        { userId: input.userId, removedReferences: grounded.unknown, sources: chunks.length },
+        "The answer cited sources that were not in the context; those references were removed",
+      );
+    }
+
+    this.logRequest(input.userId, question, trace, chunks, confidence, { generationMs, durationMs: elapsedSince(startedAt) });
 
     return {
-      answer,
+      kind: "answered",
+      answer: grounded.text,
       sources: chunks.map((chunk, index) => ({
         documentId: chunk.documentId,
         fileName: chunk.fileName,
         chunkIndex: chunk.chunkIndex,
         pageStart: chunk.pageStart,
         pageEnd: chunk.pageEnd,
+        pageLabelStart: chunk.pageLabelStart,
+        pageLabelEnd: chunk.pageLabelEnd,
+        sectionPath: chunk.sectionPath,
         rank: index + 1,
         score: chunk.ranking.fusedScore,
       })),
-      citations,
+      citations: { cited: grounded.cited, removed: grounded.unknown },
     };
+  }
+
+  /** Numbers and ids only - never the question (unless LOG_QUESTIONS) and never document text. */
+  private logAbstention(
+    userId: string,
+    question: string,
+    reason: AbstainReason,
+    signals: RetrievalSignals,
+    trace: RetrievalTrace,
+    durationMs: number,
+  ) {
+    this.log.info(
+      {
+        userId,
+        questionLength: question.length,
+        ...(this.deps.options?.logQuestions ? { question } : {}),
+        reason,
+        selected: 0,
+        signals,
+        timings: trace.timings,
+        durationMs,
+      },
+      "Question not answered: insufficient evidence",
+    );
   }
 
   private logRequest(
@@ -105,6 +145,7 @@ export class AnswerQuestionUseCase {
     question: string,
     trace: RetrievalTrace,
     chunks: RetrievedChunk[],
+    confidence: ConfidenceAssessment,
     timing: { generationMs: number; durationMs: number },
   ) {
     const { options } = this.deps;
@@ -126,6 +167,7 @@ export class AnswerQuestionUseCase {
         {
           userId,
           counts: trace.counts,
+          confidence: { decision: confidence.decision, reason: confidence.reason, signals: confidence.signals },
           contextChars: trace.contextChars,
           selected: chunks.map(({ chunkId, documentId, chunkIndex, ranking }) => ({
             chunkId,

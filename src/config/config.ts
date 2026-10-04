@@ -114,6 +114,13 @@ export const retrievalConfig = section(
     RETRIEVAL_LEXICAL_LIMIT: positiveInt(20),
     RETRIEVAL_RRF_K: positiveInt(60),
     RETRIEVAL_CONTEXT_MAX_CHARS: positiveInt(6000),
+    /** Extra rank evidence for chunks that contain an identifier/file name/version of the question verbatim. 0 turns it off. */
+    RETRIEVAL_EXACT_TOKEN_BONUS: z.coerce.number().min(0).max(10).default(1),
+    /** The answerability gate: weak evidence is answered with "not enough information" instead of asking the model. */
+    RETRIEVAL_CONFIDENCE_GATE: z.enum(["true", "false"]).default("true"),
+    // Defaults mirror DEFAULT_CONFIDENCE_POLICY (core); a test keeps them equal. Cosine similarity is specific to the embedding model: re-calibrate (npm run eval:confidence) after changing it.
+    RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: z.coerce.number().min(-1).max(1).default(0.5),
+    RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: z.coerce.number().min(0).max(1).default(0.6),
   }),
   (env) => ({
     topK: env.RETRIEVAL_TOP_K,
@@ -122,6 +129,16 @@ export const retrievalConfig = section(
     lexicalLimit: env.RETRIEVAL_LEXICAL_LIMIT,
     rrfK: env.RETRIEVAL_RRF_K,
     contextMaxChars: env.RETRIEVAL_CONTEXT_MAX_CHARS,
+    exactTokenBonus: env.RETRIEVAL_EXACT_TOKEN_BONUS,
+    // Whether identifiers must exist in the documents is a rule, not an operational knob (see core/retrieval-confidence.ts).
+    confidence:
+      env.RETRIEVAL_CONFIDENCE_GATE === "true"
+        ? {
+            minSemanticScore: env.RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE,
+            minTermCoverage: env.RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE,
+            requireKnownIdentifiers: true,
+          }
+        : undefined,
   }),
 );
 

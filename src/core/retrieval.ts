@@ -1,3 +1,5 @@
+import type { SourceProvenance } from "./provenance.js";
+
 /** A chunk found by one retrieval method. Lists of matches are ordered best first. */
 export type ChunkMatch = {
   chunkId: string;
@@ -15,20 +17,20 @@ export type RetrievalRanking = {
   /** Position/score in the vector ranking; absent when the chunk was not a semantic candidate. */
   semanticRank?: number;
   semanticScore?: number;
-  /** Position in the full-text ranking; absent when the chunk was not a lexical candidate. */
+  /** Position and score (negated BM25, higher is better) in the full-text ranking; absent when the chunk was not a lexical candidate. */
   lexicalRank?: number;
+  lexicalScore?: number;
+  /** How many of the question's exact targets (identifiers, file names, ...) the chunk contains; set only when an exact-token bonus was applied. */
+  exactMatches?: number;
 };
 
-/** A chunk's text and the document it belongs to. */
-export type StoredChunk = {
+/** A chunk's text and the document it belongs to. Provenance parts are absent when unknown. */
+export type StoredChunk = SourceProvenance & {
   chunkId: string;
   documentId: string;
   fileName: string;
   chunkIndex: number;
   content: string;
-  /** Source pages of a PDF chunk (see ChunkRecord); undefined when unknown. */
-  pageStart?: number;
-  pageEnd?: number;
 };
 
 /** A candidate chunk ready to become LLM context, with the reason it was retrieved. */

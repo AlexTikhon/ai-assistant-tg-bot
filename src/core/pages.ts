@@ -1,14 +1,17 @@
 import { normalizeText } from "../shared/utils/text.js";
 
-/** Text of one source page, as found in the original file. */
-export type SourcePage = { pageNumber: number; text: string };
+/**
+ * Text of one source page, as found in the original file. `label` is the printed page label ("iii", "7") when
+ * the file declares one and the extractor reads it reliably; it is never derived from `pageNumber`.
+ */
+export type SourcePage = { pageNumber: number; text: string; label?: string };
 
 /** Where a page's text sits inside the combined document text (end exclusive). */
-export type PageSpan = { pageNumber: number; start: number; end: number };
+export type PageSpan = { pageNumber: number; start: number; end: number; label?: string };
 
 export type ExtractedDocument = {
   text: string;
-  /** Present only for formats that have pages (PDF). Real page numbers as printed by the file, 1-based. */
+  /** Present only for formats that have pages (PDF). Physical page numbers of the file (1-based). */
   pages?: SourcePage[];
 };
 
@@ -42,7 +45,13 @@ export function buildDocumentText(extracted: ExtractedDocument): DocumentText {
     if (text) {
       text += PAGE_SEPARATOR;
     }
-    pageSpans.push({ pageNumber: page.pageNumber, start: text.length, end: text.length + pageText.length });
+    const label = page.label?.trim();
+    pageSpans.push({
+      pageNumber: page.pageNumber,
+      start: text.length,
+      end: text.length + pageText.length,
+      ...(label ? { label } : {}),
+    });
     text += pageText;
   }
 
@@ -52,12 +61,14 @@ export function buildDocumentText(extracted: ExtractedDocument): DocumentText {
 /**
  * The pages a character range [start, end) touches, or undefined when there is nothing to report
  * (no page information, or an empty range). A range inside one page gives pageStart === pageEnd.
+ * The physical numbers are always those of the file; printed labels are added only when both the first
+ * and the last page of the range have one.
  */
 export function pageRangeForSpan(
   spans: readonly PageSpan[] | undefined,
   start: number,
   end: number,
-): { pageStart: number; pageEnd: number } | undefined {
+): { pageStart: number; pageEnd: number; pageLabelStart?: string; pageLabelEnd?: string } | undefined {
   if (!spans || end <= start) {
     return undefined;
   }
@@ -67,5 +78,11 @@ export function pageRangeForSpan(
     return undefined;
   }
 
-  return { pageStart: touched[0].pageNumber, pageEnd: touched[touched.length - 1].pageNumber };
+  const first = touched[0];
+  const last = touched[touched.length - 1];
+  return {
+    pageStart: first.pageNumber,
+    pageEnd: last.pageNumber,
+    ...(first.label !== undefined && last.label !== undefined ? { pageLabelStart: first.label, pageLabelEnd: last.label } : {}),
+  };
 }

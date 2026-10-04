@@ -7,15 +7,24 @@ import { getFileExtension } from "../shared/utils/path.js";
  */
 export const CHUNKING_ALGORITHM_VERSION = 1;
 
-/** Extraction recipes per file kind. Bump the one whose output (text or page information) changes. */
+/** Extraction recipes per file kind. Bump the one whose output (text or page/section information) changes. */
 export const TEXT_EXTRACTOR_VERSION = "text-v1";
+/** Markdown: the same text as plain text, plus the heading hierarchy (section path) of every chunk. */
+export const MARKDOWN_EXTRACTOR_VERSION = "markdown-sections-v1";
 /** PDF text with per-page provenance and without pdf-parse's "-- n of m --" page markers. */
 export const PDF_EXTRACTOR_VERSION = "pdf-pages-v2";
 /** What PDFs were indexed with before pages were tracked; only ever read from legacy rows. */
 export const LEGACY_PDF_EXTRACTOR_VERSION = "pdf-v1";
 
 export function extractorVersionFor(fileName: string) {
-  return getFileExtension(fileName) === ".pdf" ? PDF_EXTRACTOR_VERSION : TEXT_EXTRACTOR_VERSION;
+  switch (getFileExtension(fileName)) {
+    case ".pdf":
+      return PDF_EXTRACTOR_VERSION;
+    case ".md":
+      return MARKDOWN_EXTRACTOR_VERSION;
+    default:
+      return TEXT_EXTRACTOR_VERSION;
+  }
 }
 
 /**

@@ -1,5 +1,6 @@
 import { getFileExtension } from "../shared/utils/path.js";
 import type { StoredIndexProfile } from "./index-profile.js";
+import type { SourceProvenance } from "./provenance.js";
 
 /** File extensions the ingestion pipeline can extract text from. */
 export const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set([".pdf", ".md", ".txt"]);
@@ -33,15 +34,12 @@ export type ChunkDraft = {
 };
 
 /** A persisted chunk together with the vector (and the model that produced it). */
-export type ChunkRecord = {
+export type ChunkRecord = SourceProvenance & {
   id: string;
   documentId: string;
   userId: string;
   chunkIndex: number;
   content: string;
-  /** Real page numbers (1-based) for paged formats (PDF); absent for text and for documents indexed before pages were tracked. */
-  pageStart?: number;
-  pageEnd?: number;
   embedding: number[];
   embeddingModel: string;
   createdAt: string;
@@ -54,13 +52,10 @@ export type ChunkText = {
 };
 
 /** Where part of an answer came from. Presentation is up to the caller. */
-export type Citation = {
+export type Citation = SourceProvenance & {
   documentId: string;
   fileName: string;
   chunkIndex: number;
-  /** First/last page of the source text for PDFs; undefined when the document has no page information. */
-  pageStart?: number;
-  pageEnd?: number;
   /** 1-based position in the context the model saw - the number the answer cites as [n]. */
   rank: number;
   /** Fused retrieval score (reciprocal rank fusion): only meaningful relative to other sources. */

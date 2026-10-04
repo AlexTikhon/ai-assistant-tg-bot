@@ -6,6 +6,7 @@ import type {
   VectorStore,
 } from "../../application/ports/vector-store.js";
 import type { ChunkText } from "../../core/document.js";
+import type { SourceProvenance } from "../../core/provenance.js";
 import type { StoredIndexProfile } from "../../core/index-profile.js";
 import { buildLexicalQuery } from "../../core/lexical-query.js";
 import type { ChunkMatch, StoredChunk } from "../../core/retrieval.js";
@@ -22,7 +23,26 @@ type VectorRow = {
   embedding_dim: number;
 };
 
-type ChunkRow = Omit<StoredChunk, "pageStart" | "pageEnd"> & { pageStart: number | null; pageEnd: number | null };
+type ChunkRow = Omit<StoredChunk, keyof SourceProvenance> & {
+  pageStart: number | null;
+  pageEnd: number | null;
+  pageLabelStart: string | null;
+  pageLabelEnd: string | null;
+  sectionPath: string | null;
+};
+
+/** The stored JSON list of heading titles, or undefined when absent or not a list of strings (never an error). */
+function parseSectionPath(json: string | null): string[] | undefined {
+  if (json === null) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) && parsed.length > 0 && parsed.every((item) => typeof item === "string") ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 type LexicalRow = {
   id: string;
@@ -83,7 +103,9 @@ export class SqliteVectorStore implements VectorStore {
     this.selectChunks = db.prepare<[string, string], ChunkRow>(
       `SELECT c.id AS chunkId, c.document_id AS documentId, d.file_name AS fileName,
               c.chunk_index AS chunkIndex, c.content,
-              c.page_start AS pageStart, c.page_end AS pageEnd
+              c.page_start AS pageStart, c.page_end AS pageEnd,
+              c.page_label_start AS pageLabelStart, c.page_label_end AS pageLabelEnd,
+              c.section_path AS sectionPath
        FROM document_chunks c
        JOIN documents d ON d.id = c.document_id AND d.user_id = c.user_id
        WHERE c.user_id = ? AND c.id IN (SELECT value FROM json_each(?))`,
@@ -194,10 +216,18 @@ export class SqliteVectorStore implements VectorStore {
     if (chunkIds.length === 0) {
       return [];
     }
-    return this.selectChunks.all(userId, JSON.stringify(chunkIds)).map(({ pageStart, pageEnd, ...chunk }) => ({
-      ...chunk,
-      ...(pageStart !== null && pageEnd !== null ? { pageStart, pageEnd } : {}),
-    }));
+    return this.selectChunks
+      .all(userId, JSON.stringify(chunkIds))
+      .map(({ pageStart, pageEnd, pageLabelStart, pageLabelEnd, sectionPath, ...chunk }) => {
+        const section = parseSectionPath(sectionPath);
+        return {
+          ...chunk,
+          ...(pageStart !== null && pageEnd !== null ? { pageStart, pageEnd } : {}),
+          // Labels only make sense next to pages, and only when both ends are known.
+          ...(pageStart !== null && pageEnd !== null && pageLabelStart !== null && pageLabelEnd !== null ? { pageLabelStart, pageLabelEnd } : {}),
+          ...(section ? { sectionPath: section } : {}),
+        };
+      });
   }
 
   async listByDocument(userId: string, documentId: string): Promise<ChunkText[]> {

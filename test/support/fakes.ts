@@ -2,6 +2,7 @@ import type { ChatMessage, ChatModel } from "../../src/application/ports/chat-mo
 import type { EmbeddingsProvider } from "../../src/application/ports/embeddings-provider.js";
 import type { FileStorage } from "../../src/application/ports/file-storage.js";
 import type { DocumentTextExtractor, ExtractionInput } from "../../src/application/ports/text-extractor.js";
+import type { AnswerQuestionResult } from "../../src/application/use-cases/answer-question.use-case.js";
 import type { ExtractedDocument } from "../../src/core/pages.js";
 import type { ChunkRecord, DocumentRecord } from "../../src/core/document.js";
 import { openDatabase } from "../../src/infrastructure/sqlite/database.js";
@@ -142,4 +143,12 @@ export function makeChunk(overrides: Partial<ChunkRecord> = {}): ChunkRecord {
     createdAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
+}
+
+/** Narrows an answer-question result to the "answered" case, failing the test if the bot abstained. */
+export function answered(result: AnswerQuestionResult) {
+  if (result.kind !== "answered") {
+    throw new Error(`Expected an answer but the bot abstained (${result.reason})`);
+  }
+  return result;
 }

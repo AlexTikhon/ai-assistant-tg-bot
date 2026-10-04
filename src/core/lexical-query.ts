@@ -22,6 +22,11 @@ const TERM = /[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}_./-]*[\p{L}\p{N}\p{M}])?/gu;
 /** Possessive 's: "cat's" is about the cat, and the SQLite tokenizer would otherwise leave a stray "s". */
 const POSSESSIVE = /['’]s\b/gi;
 
+/** The words and identifier-like runs of a text in order of appearance, original case, with possessive 's removed. */
+export function extractTerms(text: string): string[] {
+  return [...text.normalize("NFC").replace(POSSESSIVE, "").matchAll(TERM)].map(([term]) => term);
+}
+
 export type LexicalQueryOptions = {
   /** Lower-case words that are ignored. Defaults to a short English list. */
   stopWords?: ReadonlySet<string>;
@@ -41,7 +46,7 @@ export function buildLexicalQuery(text: string, options: LexicalQueryOptions = {
   const stopWords = options.stopWords ?? ENGLISH_STOP_WORDS;
   const terms = new Map<string, string>();
 
-  for (const [term] of text.normalize("NFC").replace(POSSESSIVE, "").matchAll(TERM)) {
+  for (const term of extractTerms(text)) {
     const key = term.toLowerCase();
     if (!stopWords.has(key) && !terms.has(key)) {
       terms.set(key, term);

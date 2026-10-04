@@ -7,6 +7,8 @@ import {
   extractorVersionFor,
   indexFingerprint,
   LEGACY_PDF_EXTRACTOR_VERSION,
+  legacyIndexProfile,
+  MARKDOWN_EXTRACTOR_VERSION,
   TEXT_EXTRACTOR_VERSION,
 } from "../../src/core/index-profile.js";
 import type { StoredIndexProfile } from "../../src/core/index-profile.js";
@@ -59,10 +61,24 @@ describe("index fingerprint", () => {
 
 describe("extractor versions", () => {
   it("are per file type, so a PDF extraction change does not touch text documents", () => {
-    expect(extractorVersionFor("a.md")).toBe(TEXT_EXTRACTOR_VERSION);
     expect(extractorVersionFor("a.TXT")).toBe(TEXT_EXTRACTOR_VERSION);
     expect(extractorVersionFor("a.pdf")).not.toBe(LEGACY_PDF_EXTRACTOR_VERSION);
     expect(extractorVersionFor("A.PDF")).toBe(extractorVersionFor("a.pdf"));
+  });
+
+  it("give Markdown its own version, because it records section paths that plain text does not", () => {
+    expect(extractorVersionFor("a.md")).toBe(MARKDOWN_EXTRACTOR_VERSION);
+    expect(extractorVersionFor("A.MD")).toBe(MARKDOWN_EXTRACTOR_VERSION);
+    expect(MARKDOWN_EXTRACTOR_VERSION).not.toBe(TEXT_EXTRACTOR_VERSION);
+  });
+
+  it("report a Markdown document indexed before section paths as needing re-extraction, not as unknown", () => {
+    const legacy = legacyIndexProfile("old.md", "m", 3);
+
+    expect(legacy.extractorVersion).toBe(TEXT_EXTRACTOR_VERSION);
+    expect(diffIndexProfiles(legacy, { ...active(), extractorVersion: extractorVersionFor("old.md") })).toContainEqual(
+      expect.objectContaining({ kind: "extractor", field: "extractorVersion" }),
+    );
   });
 });
 

@@ -18,28 +18,64 @@ const expectedSourceSchema = z
     message: "an expected source needs `contains` (preferred) or `chunkHint`",
   });
 
-const evalCaseSchema = z.object({
-  id: z.string().min(1),
-  /** Whose documents are searched. */
-  user: z.string().min(1).default("alice"),
-  question: z.string().min(1),
-  /** Sources that support an answer. Empty: the corpus has no answer (the question must not surface anything). */
-  expectedSources: z.array(expectedSourceSchema),
-  /** Terms the retrieved context should contain; reported as term coverage. */
-  expectedTerms: z.array(z.string().min(1)).default([]),
-  tags: z.array(z.string().min(1)).default([]),
+/**
+ * Which cases may be used to choose thresholds and ranking variants (calibration) and which are only
+ * reported afterwards (validation). Assigned by hand and fixed in the file - never shuffled at run time.
+ */
+export const DATASET_SPLITS = ["calibration", "validation"] as const;
+export type DatasetSplit = (typeof DATASET_SPLITS)[number];
+
+const evalCaseSchema = z
+  .object({
+    id: z.string().min(1),
+    /** Whose documents are searched. */
+    user: z.string().min(1).default("alice"),
+    question: z.string().min(1),
+    split: z.enum(DATASET_SPLITS),
+    /** Whether the asking user's documents can answer the question. Explicit, never inferred. */
+    answerable: z.boolean(),
+    /** Sources that support an answer. Empty exactly when the question is not answerable. */
+    expectedSources: z.array(expectedSourceSchema),
+    /** Terms the retrieved context should contain; reported as term coverage. */
+    expectedTerms: z.array(z.string().min(1)).default([]),
+    tags: z.array(z.string().min(1)).default([]),
+  })
+  .superRefine((evalCase, context) => {
+    if (evalCase.answerable && evalCase.expectedSources.length === 0) {
+      context.addIssue({ code: "custom", path: ["expectedSources"], message: "an answerable case needs at least one expected source" });
+    }
+    if (!evalCase.answerable && evalCase.expectedSources.length > 0) {
+      context.addIssue({ code: "custom", path: ["expectedSources"], message: "a case that is not answerable cannot have an expected source" });
+    }
+  });
+
+const datasetHeaderSchema = z.object({
+  dataset: z.object({
+    /** Bump when cases are added, removed or relabelled: metrics of different versions are not comparable. */
+    version: z.number().int().positive(),
+    description: z.string().optional(),
+  }),
 });
 
 export type ExpectedSource = z.infer<typeof expectedSourceSchema>;
 export type EvalCase = z.infer<typeof evalCaseSchema>;
 
+export type EvalDataset = { version: number; description?: string; cases: EvalCase[] };
+
+export type SplitCounts = { queries: number; answerable: number; unanswerable: number };
+export type DatasetDescription = SplitCounts & { bySplit: Record<DatasetSplit, SplitCounts> };
+
 /** A retrieved chunk as the evaluation sees it: who owns it, which file it is from and its text. */
 export type RetrievedForMatching = { owner: string; fileName: string; chunkIndex: number; content: string };
 
-/** JSON Lines: one case per line; blank lines and lines starting with # are ignored. */
-export function parseDataset(text: string): EvalCase[] {
+/**
+ * JSON Lines: one header line `{"dataset":{"version":2}}` and one case per line; blank lines and lines
+ * starting with # are ignored.
+ */
+export function parseDatasetFile(text: string): EvalDataset {
   const cases: EvalCase[] = [];
   const seen = new Set<string>();
+  let header: z.infer<typeof datasetHeaderSchema>["dataset"] | undefined;
 
   text.split(/\r?\n/).forEach((raw, index) => {
     const line = raw.trim();
@@ -55,6 +91,19 @@ export function parseDataset(text: string): EvalCase[] {
       throw new Error(`Invalid dataset ${where}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
+    if (typeof json === "object" && json !== null && "dataset" in json) {
+      const parsedHeader = datasetHeaderSchema.safeParse(json);
+      if (!parsedHeader.success) {
+        const problems = parsedHeader.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
+        throw new Error(`Invalid dataset ${where}: ${problems.join("; ")}`);
+      }
+      if (header) {
+        throw new Error(`Invalid dataset ${where}: more than one dataset header`);
+      }
+      header = parsedHeader.data.dataset;
+      return;
+    }
+
     const parsed = evalCaseSchema.safeParse(json);
     if (!parsed.success) {
       const problems = parsed.error.issues.map((issue) => `${issue.path.join(".") || "case"}: ${issue.message}`);
@@ -67,10 +116,32 @@ export function parseDataset(text: string): EvalCase[] {
     cases.push(parsed.data);
   });
 
+  if (!header) {
+    throw new Error('The dataset has no header line, e.g. {"dataset":{"version":1}}: metric history needs a version.');
+  }
   if (cases.length === 0) {
     throw new Error("The dataset has no cases.");
   }
-  return cases;
+  return { version: header.version, description: header.description, cases };
+}
+
+/** Just the cases of a dataset file. */
+export function parseDataset(text: string): EvalCase[] {
+  return parseDatasetFile(text).cases;
+}
+
+export function describeDataset(cases: readonly EvalCase[]): DatasetDescription {
+  const count = (items: readonly EvalCase[]): SplitCounts => {
+    const answerable = items.filter((item) => item.answerable).length;
+    return { queries: items.length, answerable, unanswerable: items.length - answerable };
+  };
+  return {
+    ...count(cases),
+    bySplit: {
+      calibration: count(cases.filter((item) => item.split === "calibration")),
+      validation: count(cases.filter((item) => item.split === "validation")),
+    },
+  };
 }
 
 const squash = (text: string) => text.replace(/\s+/g, " ").trim().toLowerCase();

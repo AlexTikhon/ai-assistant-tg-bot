@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { HybridRetriever } from "../../src/application/hybrid-retriever.js";
 import { AnswerQuestionUseCase } from "../../src/application/use-cases/answer-question.use-case.js";
+import type { SourceProvenance } from "../../src/core/provenance.js";
 import { formatAnswer } from "../../src/telegram/ui/format.js";
-import { createTestStores, FakeChatModel, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
+import { answered, createTestStores, FakeChatModel, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
 
 let stores: ReturnType<typeof createTestStores>;
 let embeddings: KeywordEmbeddings;
@@ -28,7 +29,7 @@ function createUseCase(chatModel: FakeChatModel) {
 async function index(
   documentId: string,
   fileName: string,
-  chunks: Array<{ content: string; pageStart?: number; pageEnd?: number }>,
+  chunks: Array<{ content: string } & SourceProvenance>,
 ) {
   await stores.documents.saveWithChunks(
     makeDocument({ id: documentId, userId: "user-1", fileName }),
@@ -58,7 +59,7 @@ describe("page provenance reaches the answer", () => {
     const chat = new FakeChatModel("It resets [1], and eats at noon [2].");
     const { useCase } = createUseCase(chat);
 
-    const result = await useCase.execute({ userId: "user-1", question: "cat feeder" });
+    const result = answered(await useCase.execute({ userId: "user-1", question: "cat feeder" }));
 
     expect(result.sources.map(({ fileName, pageStart, pageEnd }) => ({ fileName, pageStart, pageEnd }))).toEqual(
       expect.arrayContaining([
@@ -85,7 +86,7 @@ describe("citation numbering stays consistent through deduplication and diversif
     const chat = new FakeChatModel("Answer [1][2][3].");
     const { useCase } = createUseCase(chat);
 
-    const result = await useCase.execute({ userId: "user-1", question: "what does the cat do" });
+    const result = answered(await useCase.execute({ userId: "user-1", question: "what does the cat do" }));
 
     const prompt = chat.calls[0][1].content;
     const promptNumbers = [...prompt.matchAll(/^\[(\d+)\] /gm)].map((match) => Number(match[1]));
@@ -107,7 +108,7 @@ describe("answer grounding", () => {
   async function ask(answer: string) {
     await index("doc", "pets.md", [{ content: "the cat sleeps" }, { content: "the cat eats" }]);
     const { useCase, warn } = createUseCase(new FakeChatModel(answer));
-    const result = await useCase.execute({ userId: "user-1", question: "what does the cat do" });
+    const result = answered(await useCase.execute({ userId: "user-1", question: "what does the cat do" }));
     return { result, warn };
   }
 
@@ -141,5 +142,71 @@ describe("answer grounding", () => {
 
     expect(formatAnswer(result)).toContain("The cat [sleeps [1 and ]eats[] [ ] [x]");
     expect(result.citations).toEqual({ cited: [], removed: [] });
+  });
+});
+
+describe("section and label provenance reaches the answer", () => {
+  it("shows the Markdown section in the prompt and in the Telegram source list, next to the PDF pages and the text chunk", async () => {
+    await index("md", "api.md", [{ content: "the cat token refresh flow", sectionPath: ["Authentication", "Refresh tokens"] }]);
+    await index("pdf", "spec.pdf", [{ content: "the cat feeder spec", pageStart: 5, pageEnd: 6, pageLabelStart: "iii", pageLabelEnd: "iv" }]);
+    await index("txt", "notes.txt", [{ content: "the cat notes" }]);
+    const chat = new FakeChatModel("See [1], [2] and [3].");
+    const { useCase } = createUseCase(chat);
+
+    const result = answered(await useCase.execute({ userId: "user-1", question: "cat" }));
+
+    const prompt = chat.calls[0][1].content;
+    expect(prompt).toContain("api.md, Authentication > Refresh tokens");
+    expect(prompt).toContain("spec.pdf, pp. iii–iv (PDF pp. 5–6)");
+    expect(prompt).toContain("notes.txt, chunk 1");
+    const text = formatAnswer(result);
+    expect(text).toContain("api.md · Authentication > Refresh tokens");
+    expect(text).toContain("spec.pdf · pp. iii–iv (PDF pp. 5–6)");
+    expect(text).toContain("notes.txt · chunk 1");
+  });
+
+  it("keeps the chunk number available internally even when a section is shown", async () => {
+    await index("md", "api.md", [{ content: "the cat sleeps" }, { content: "the cat token flow", sectionPath: ["Auth"] }]);
+    const { useCase } = createUseCase(new FakeChatModel("ok [1]"));
+
+    const result = answered(await useCase.execute({ userId: "user-1", question: "cat token" }));
+
+    const source = result.sources.find((item) => item.sectionPath);
+    expect(source).toMatchObject({ chunkIndex: 1, sectionPath: ["Auth"] });
+  });
+});
+
+describe("citation validation with several references", () => {
+  async function ask(answer: string, chunkCount = 2) {
+    await index("doc", "pets.md", Array.from({ length: chunkCount }, (_, i) => ({ content: `the cat does thing ${i}` })));
+    const { useCase } = createUseCase(new FakeChatModel(answer));
+    return answered(await useCase.execute({ userId: "user-1", question: "what does the cat do" }));
+  }
+
+  it("accepts a combined [1][2] and reports both once, even when repeated", async () => {
+    const result = await ask("First [1][2], then again [2][1].");
+
+    expect(result.answer).toBe("First [1][2], then again [2][1].");
+    expect(result.citations).toEqual({ cited: [1, 2], removed: [] });
+  });
+
+  it("removes a number that diversification dropped from the context: [3] was never shown to the model", async () => {
+    // Two near-identical chunks collapse to one source, so a model that cites [2] cites something it never saw.
+    await index("copy-a", "a.md", [{ content: "the cat sleeps on the warm sofa all afternoon long" }]);
+    await index("copy-b", "b.md", [{ content: "the cat sleeps on the warm sofa all afternoon long" }]);
+    const { useCase } = createUseCase(new FakeChatModel("It sleeps [1], definitely [2]."));
+
+    const result = answered(await useCase.execute({ userId: "user-1", question: "where does the cat sleep" }));
+
+    expect(result.sources).toHaveLength(1);
+    expect(result.answer).toBe("It sleeps [1], definitely.");
+    expect(result.citations).toEqual({ cited: [1], removed: [2] });
+  });
+
+  it("removes an unknown number such as [99] and keeps the valid ones", async () => {
+    const result = await ask("Yes [1][99].");
+
+    expect(result.answer).toBe("Yes [1].");
+    expect(result.citations).toEqual({ cited: [1], removed: [99] });
   });
 });

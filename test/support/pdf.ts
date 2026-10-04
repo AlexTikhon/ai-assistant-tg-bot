@@ -1,14 +1,20 @@
+/** A page-label range as in a PDF's /PageLabels: from physical page index `page` (0-based), numbered in `style`. */
+export type PageLabelRange = { page: number; style: "D" | "r" | "R" | "a" | "A"; start?: number };
+
 /**
  * Builds a small, well-formed PDF with one line of text per page (no dependencies, deterministic).
- * `pages[0]` is page 1. Characters outside printable ASCII are not supported.
+ * `pages[0]` is page 1. Characters outside printable ASCII are not supported. `labels` declares printed page labels.
  */
-export function buildPdf(pages: string[]) {
+export function buildPdf(pages: string[], options: { labels?: PageLabelRange[] } = {}) {
+  const labels = options.labels
+    ? ` /PageLabels << /Nums [${options.labels.map((range) => `${range.page} << /S /${range.style}${range.start ? ` /St ${range.start}` : ""} >>`).join(" ")}] >>`
+    : "";
   const escape = (text: string) => text.replace(/[\\()]/g, (char) => `\\${char}`);
   const pageObjectNumber = (index: number) => 4 + index * 2;
   const contentObjectNumber = (index: number) => 5 + index * 2;
 
   const objects: string[] = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Catalog /Pages 2 0 R${labels} >>`,
     `<< /Type /Pages /Kids [${pages.map((_, index) => `${pageObjectNumber(index)} 0 R`).join(" ")}] /Count ${pages.length} >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
   ];

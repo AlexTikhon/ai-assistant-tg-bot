@@ -85,11 +85,16 @@ describe("architecture boundaries", () => {
     expect(offenders.map((entry) => path.relative(SRC, entry.file))).toEqual([]);
   });
 
-  it("PDF-specific provenance stays optional in the core model", () => {
-    const document = fs.readFileSync(path.join(SRC, "core", "document.ts"), "utf-8");
+  it("format-specific provenance (PDF pages and labels, Markdown sections) stays optional in the core model", () => {
+    const provenance = fs.readFileSync(path.join(SRC, "core", "provenance.ts"), "utf-8");
 
-    expect(document).toMatch(/pageStart\?: number/);
-    expect(document).toMatch(/pageEnd\?: number/);
-    expect(document).not.toMatch(/pageStart: number/);
+    for (const field of ["pageStart", "pageEnd", "pageLabelStart", "pageLabelEnd", "sectionPath"]) {
+      expect(provenance, `${field} must be optional`).toMatch(new RegExp(`${field}\\?:`));
+      expect(provenance, `${field} must not be required`).not.toMatch(new RegExp(`\\b${field}:`));
+    }
+    // ChunkRecord, StoredChunk and Citation get them from the shared type instead of declaring their own required copies.
+    for (const file of ["document.ts", "retrieval.ts"]) {
+      expect(fs.readFileSync(path.join(SRC, "core", file), "utf-8")).not.toMatch(/\bpage(Start|End): number/);
+    }
   });
 });

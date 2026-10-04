@@ -1,5 +1,7 @@
 import { selectContext } from "../core/context-selection.js";
-import { reciprocalRankFusion } from "../core/rank-fusion.js";
+import { boostExactMatches, reciprocalRankFusion } from "../core/rank-fusion.js";
+import { assessRetrievalConfidence, computeRetrievalSignals, DEFAULT_CONFIDENCE_POLICY } from "../core/retrieval-confidence.js";
+import { analyzeQuery } from "../core/technical-tokens.js";
 import type { ChunkRecord, DocumentRecord } from "../core/document.js";
 import type { RetrievedChunk } from "../core/retrieval.js";
 import { openDatabase } from "../infrastructure/sqlite/database.js";
@@ -179,6 +181,17 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<Benchmark
       const semantic = await semanticOf(0);
       const lexical = await lexicalOf(commonQuery);
       const fused = reciprocalRankFusion(semantic, lexical).slice(0, 15);
+      // The loaded candidate pool and a question with an identifier in it, as the exact-token and confidence code see them.
+      const loadCandidates = async () => {
+        const stored = await store.getChunks(userId, fused.map((match) => match.chunkId));
+        const byId = new Map(stored.map((chunk) => [chunk.chunkId, chunk]));
+        return fused.flatMap(({ chunkId, documentId, chunkIndex, ...ranking }): RetrievedChunk[] => {
+          const chunk = byId.get(chunkId);
+          return chunk ? [{ ...chunk, ranking }] : [];
+        });
+      };
+      const pool = await loadCandidates();
+      const identifierQuestion = `${rareQueries[0]} what does ERR_${vocabularyWord(7)}_42 mean in v2.14.1?`;
 
       const stages = [
         await timeStage("semantic scan", options, (i) => semanticOf(i)),
@@ -194,6 +207,16 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<Benchmark
           });
           return selectContext(candidates, { maxChunks: 5, maxChars: 6000, maxPerDocument: 3 });
         }),
+        // The code added by the exact-token bonus and the answerability gate: pure CPU on the candidate pool.
+        await timeStage("exact-token bonus", options, () =>
+          boostExactMatches(pool, analyzeQuery(identifierQuestion).exactTargets, 1 / 61),
+        ),
+        await timeStage("evidence signals + gate", options, () =>
+          assessRetrievalConfidence(
+            computeRetrievalSignals({ question: identifierQuestion, candidates: pool }),
+            DEFAULT_CONFIDENCE_POLICY,
+          ),
+        ),
       ];
 
       results.push({

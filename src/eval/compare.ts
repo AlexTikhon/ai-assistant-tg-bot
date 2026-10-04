@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { EmbeddingsProvider } from "../application/ports/embeddings-provider.js";
+import { DEFAULT_CONFIDENCE_POLICY } from "../core/retrieval-confidence.js";
+import type { ConfidencePolicy } from "../core/retrieval-confidence.js";
 import type { EvalCase } from "./dataset.js";
 import { buildEvalIndex } from "./harness.js";
 import type { ChunkingSettings, CorpusDocument, EvalIndex } from "./harness.js";
@@ -9,7 +11,8 @@ import type { EvalReport, RetrievalSettings } from "./runner.js";
 /** Everything that can differ between two evaluated configurations: indexing and query-time settings. */
 export type EvalSettings = ChunkingSettings & RetrievalSettings;
 
-export type ConfigOverride = { name: string } & Partial<EvalSettings>;
+/** Overrides replace single fields of the base; a confidence override may name just the fields it changes. */
+export type ConfigOverride = { name: string } & Partial<Omit<EvalSettings, "confidence">> & { confidence?: Partial<ConfidencePolicy> };
 
 const comparisonSchema = z.object({
   configs: z
@@ -25,6 +28,17 @@ const comparisonSchema = z.object({
           lexicalLimit: z.number().int().nonnegative().optional(),
           rrfK: z.number().positive().optional(),
           contextMaxChars: z.number().int().positive().optional(),
+          semanticWeight: z.number().min(0).optional(),
+          lexicalWeight: z.number().min(0).optional(),
+          exactTokenBonus: z.number().min(0).optional(),
+          confidence: z
+            .object({
+              minSemanticScore: z.number().min(-1).max(1).optional(),
+              minTermCoverage: z.number().min(0).max(1).optional(),
+              requireKnownIdentifiers: z.boolean().optional(),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     )
@@ -51,6 +65,10 @@ export type ComparisonResult = {
   name: string;
   settings: EvalSettings;
   chunkCount: number;
+  /** Documents indexed, and the recipe they were indexed with. */
+  documentCount: number;
+  profile: EvalIndex["profile"];
+  fingerprint: string;
   report: EvalReport;
 };
 
@@ -74,8 +92,12 @@ export async function compareConfigs(input: CompareInput): Promise<ComparisonRes
   try {
     const results: ComparisonResult[] = [];
 
-    for (const { name, ...overrides } of input.configs) {
-      const settings: EvalSettings = { ...input.base, ...definedOnly(overrides) };
+    for (const { name, confidence, ...overrides } of input.configs) {
+      const settings: EvalSettings = {
+        ...input.base,
+        ...definedOnly(overrides),
+        ...(confidence ? { confidence: { ...(input.base.confidence ?? DEFAULT_CONFIDENCE_POLICY), ...definedOnly(confidence) } } : {}),
+      };
       if (settings.chunkOverlap >= settings.chunkSize) {
         throw new Error(`Configuration "${name}": chunkOverlap must be smaller than chunkSize.`);
       }
@@ -94,7 +116,15 @@ export async function compareConfigs(input: CompareInput): Promise<ComparisonRes
         retrieval: settings,
         ks: input.ks,
       });
-      results.push({ name, settings, chunkCount: index.chunkCount, report });
+      results.push({
+        name,
+        settings,
+        chunkCount: index.chunkCount,
+        documentCount: index.documentCount,
+        profile: index.profile,
+        fingerprint: index.fingerprint,
+        report,
+      });
     }
 
     return results;

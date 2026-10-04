@@ -2,14 +2,20 @@ import type { AnswerQuestionResult } from "../../application/use-cases/answer-qu
 import type { IngestDocumentResult } from "../../application/use-cases/ingest-document.use-case.js";
 import { formatSourceLocation } from "../../core/citations.js";
 import type { DocumentRecord } from "../../core/document.js";
+import { messages } from "./messages.js";
 
 /**
  * Answer text followed by the numbered sources, in the order the model saw them, so "[2]" in the
- * answer is the line starting with [2] below. PDFs show the real pages they were taken from ("p. 8",
- * "pp. 12–13"), everything else the chunk position. Plain text on purpose: file names come from users and
- * are never parsed as markup.
+ * answer is the line starting with [2] below. Each source shows the richest place known: the PDF pages
+ * ("p. 8", "pp. 12–13"), the Markdown section ("Authentication > Refresh tokens") or the chunk position.
+ * Plain text on purpose: file names and headings come from users and are never parsed as markup.
+ *
+ * When the documents hold too little evidence there is only one sentence: no sources, no scores, no reason.
  */
 export function formatAnswer(result: AnswerQuestionResult) {
+  if (result.kind === "insufficient-evidence") {
+    return messages.insufficientEvidence;
+  }
   if (result.sources.length === 0) {
     return `${result.answer}\n\nSources:\n- none`;
   }

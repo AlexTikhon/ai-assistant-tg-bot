@@ -1,3 +1,6 @@
+import { formatSectionPath } from "./provenance.js";
+import type { SourceProvenance } from "./provenance.js";
+
 export type CitationCheck = {
   /** The answer with references to non-existent sources removed. */
   text: string;
@@ -64,14 +67,29 @@ export function groundCitations(answer: string, sourceCount: number): CitationCh
   };
 }
 
+const pages = (start: string | number, end: string | number) => (start === end ? `p. ${start}` : `pp. ${start}–${end}`);
+
 /**
- * Where in the source a chunk sits, for humans: real page numbers for PDFs ("p. 8", "pp. 12–13"), otherwise
- * the 1-based chunk position ("chunk 4"). A page range is only shown when both ends are known.
+ * Where in the source a chunk sits, for humans - the richest provenance that is known:
+ *
+ * - PDF: the physical pages ("p. 8", "pp. 12–13"). When the file also declares printed page labels that differ
+ *   from the physical numbers, both are shown so they cannot be mistaken for each other:
+ *   "pp. iii–iv (PDF pp. 5–6)". A range is only shown when both ends are known.
+ * - Markdown: the section ("Authentication > Refresh tokens").
+ * - otherwise the 1-based chunk position ("chunk 4").
  */
-export function formatSourceLocation(location: { chunkIndex: number; pageStart?: number; pageEnd?: number }) {
-  const { pageStart, pageEnd } = location;
+export function formatSourceLocation(location: { chunkIndex: number } & SourceProvenance) {
+  const { pageStart, pageEnd, pageLabelStart, pageLabelEnd, sectionPath } = location;
+
   if (pageStart !== undefined && pageEnd !== undefined) {
-    return pageStart === pageEnd ? `p. ${pageStart}` : `pp. ${pageStart}–${pageEnd}`;
+    const labelled = pageLabelStart !== undefined && pageLabelEnd !== undefined;
+    if (labelled && (pageLabelStart !== String(pageStart) || pageLabelEnd !== String(pageEnd))) {
+      return `${pages(pageLabelStart, pageLabelEnd)} (PDF ${pages(pageStart, pageEnd)})`;
+    }
+    return pages(pageStart, pageEnd);
+  }
+  if (sectionPath && sectionPath.length > 0) {
+    return formatSectionPath(sectionPath);
   }
   return `chunk ${location.chunkIndex + 1}`;
 }

@@ -133,3 +133,52 @@ describe("page provenance of chunks", () => {
     }
   });
 });
+
+describe("printed page labels (optional)", () => {
+  it("are carried through when the source pages declare them", () => {
+    const { pageSpans } = buildDocumentText({
+      text: "",
+      pages: [
+        { pageNumber: 5, text: "Preface text", label: "iii" },
+        { pageNumber: 6, text: "More preface", label: "iv" },
+        { pageNumber: 7, text: "Chapter one", label: "1" },
+      ],
+    });
+
+    expect(pageSpans?.map((span) => span.label)).toEqual(["iii", "iv", "1"]);
+    expect(pageRangeForSpan(pageSpans, 0, 5)).toEqual({ pageStart: 5, pageEnd: 5, pageLabelStart: "iii", pageLabelEnd: "iii" });
+    expect(pageRangeForSpan(pageSpans, 0, 20)).toEqual({ pageStart: 5, pageEnd: 6, pageLabelStart: "iii", pageLabelEnd: "iv" });
+  });
+
+  it("never change the physical page numbers", () => {
+    const { pageSpans } = buildDocumentText({ text: "", pages: [{ pageNumber: 10, text: "Body", label: "7" }] });
+
+    expect(pageRangeForSpan(pageSpans, 0, 4)).toMatchObject({ pageStart: 10, pageEnd: 10, pageLabelStart: "7" });
+  });
+
+  it("are simply absent when the file declares none: the range is the physical pages alone", () => {
+    const { pageSpans } = buildDocumentText({ text: "", pages: [{ pageNumber: 2, text: "Body one" }, { pageNumber: 3, text: "Body two" }] });
+    const range = pageRangeForSpan(pageSpans, 0, 12);
+
+    expect(range).toEqual({ pageStart: 2, pageEnd: 3 });
+    expect(range).not.toHaveProperty("pageLabelStart");
+  });
+
+  it("are dropped when only one end of the range has a label: a half-known label would mislead", () => {
+    const { pageSpans } = buildDocumentText({
+      text: "",
+      pages: [
+        { pageNumber: 1, text: "Unlabelled page" },
+        { pageNumber: 2, text: "Labelled page", label: "ii" },
+      ],
+    });
+
+    expect(pageRangeForSpan(pageSpans, 0, 30)).toEqual({ pageStart: 1, pageEnd: 2 });
+  });
+
+  it("ignore blank labels", () => {
+    const { pageSpans } = buildDocumentText({ text: "", pages: [{ pageNumber: 1, text: "Body", label: "  " }] });
+
+    expect(pageRangeForSpan(pageSpans, 0, 4)).toEqual({ pageStart: 1, pageEnd: 1 });
+  });
+});

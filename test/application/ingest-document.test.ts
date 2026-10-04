@@ -281,3 +281,134 @@ describe("IngestDocumentUseCase per-user limits", () => {
     });
   });
 });
+
+describe("Markdown section provenance", () => {
+  const withOptions = { chunkSize: 80, chunkOverlap: 10 };
+
+  async function ingestMarkdown(text: string, fileName = "api.md") {
+    const result = await createUseCase(stores.documents, withOptions).execute(upload({ fileName, text }));
+    const ids = (stores.db.prepare("SELECT id FROM document_chunks WHERE document_id = ? ORDER BY chunk_index").all(result.documentId) as Array<{ id: string }>).map(
+      (row) => row.id,
+    );
+    const chunks = await stores.vectorStore.getChunks("user-1", ids);
+    return ids.map((id) => chunks.find((chunk) => chunk.chunkId === id)!);
+  }
+
+  it("a single top-level heading labels the chunks below it", async () => {
+    const chunks = await ingestMarkdown("# Authentication\n\nTokens identify the caller.");
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].sectionPath).toEqual(["Authentication"]);
+    expect(chunks[0].chunkIndex).toBe(0);
+  });
+
+  it("nested headings give the whole hierarchy", async () => {
+    const chunks = await ingestMarkdown(
+      "# Authentication\n\nIntro to authentication and how callers prove who they are.\n\n## Refresh tokens\n\nRefresh tokens last for thirty days and can be rotated at any time.",
+    );
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.map((chunk) => chunk.sectionPath)).toContainEqual(["Authentication"]);
+    expect(chunks.map((chunk) => chunk.sectionPath)).toContainEqual(["Authentication", "Refresh tokens"]);
+    expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual(chunks.map((_, index) => index));
+  });
+
+  it("text before the first heading has no section: the chunk number is shown instead of an invented one", async () => {
+    const chunks = await ingestMarkdown("Preamble that comes before any heading at all, in plain words.\n\n# First\n\nBody of the first section is here.");
+
+    expect(chunks[0].content).toContain("Preamble");
+    expect(chunks[0]).not.toHaveProperty("sectionPath");
+    expect(chunks.some((chunk) => chunk.sectionPath?.[0] === "First")).toBe(true);
+  });
+
+  it("a very long section is split by the normal rules and every part keeps the section", async () => {
+    const chunks = await ingestMarkdown(`# Long section\n\n${"The quick brown fox jumps over the lazy dog. ".repeat(20)}`);
+
+    expect(chunks.length).toBeGreaterThan(5);
+    expect(chunks.every((chunk) => chunk.content.length <= withOptions.chunkSize)).toBe(true);
+    expect(chunks.every((chunk) => chunk.sectionPath?.join(">") === "Long section")).toBe(true);
+  });
+
+  it("headings with the same name under different parents stay distinct", async () => {
+    const chunks = await ingestMarkdown(
+      "# One\n\n## Setup\n\nInstall the first thing and then configure it carefully.\n\n# Two\n\n## Setup\n\nInstall the second thing and then configure it differently.",
+    );
+    const paths = chunks.map((chunk) => chunk.sectionPath?.join(" > "));
+
+    expect(paths).toContain("One > Setup");
+    expect(paths).toContain("Two > Setup");
+  });
+
+  it("keeps the heading text searchable: headings are part of the chunk content", async () => {
+    const chunks = await ingestMarkdown("# Authentication\n\nShort body.");
+
+    expect(chunks[0].content).toContain("# Authentication");
+  });
+
+  it("ignores heading-like lines in code blocks", async () => {
+    const chunks = await ingestMarkdown("# Real\n\n```sh\n# not a heading\nls\n```");
+
+    expect(chunks.every((chunk) => chunk.sectionPath?.[0] === "Real")).toBe(true);
+    expect(chunks.some((chunk) => chunk.sectionPath?.includes("not a heading"))).toBe(false);
+  });
+
+  it("does not give plain text files a section path, even if they contain lines that start with #", async () => {
+    const chunks = await ingestMarkdown("# looks like a heading\n\nbut this is notes.txt", "notes.txt");
+
+    expect(chunks.every((chunk) => chunk.sectionPath === undefined)).toBe(true);
+  });
+
+  it("records a different extractor version for Markdown, so documents indexed before section paths are reported as stale", async () => {
+    const markdown = await createUseCase().execute(upload({ fileName: "a.md", text: "# A\n\nbody" }));
+    const text = await createUseCase().execute(upload({ fileName: "a.txt", text: "# A\n\nbody" }));
+
+    const profile = async (id: string) => (await stores.documents.findById("user-1", id))?.indexProfile?.extractorVersion;
+    expect(await profile(markdown.documentId)).toBe("markdown-sections-v1");
+    expect(await profile(text.documentId)).toBe("text-v1");
+  });
+});
+
+describe("page provenance: physical pages and optional printed labels", () => {
+  const pagedExtractor = (labels: boolean) => ({
+    async extract() {
+      return {
+        text: "",
+        pages: [
+          { pageNumber: 5, text: "The cat feeder resets itself after a power cut.", ...(labels ? { label: "iii" } : {}) },
+          { pageNumber: 6, text: "The dog bowl is dishwasher safe.", ...(labels ? { label: "iv" } : {}) },
+        ],
+      };
+    },
+  });
+
+  async function ingestPaged(labels: boolean) {
+    const result = await new IngestDocumentUseCase({
+      documents: stores.documents,
+      files,
+      extractor: pagedExtractor(labels),
+      embeddings,
+      options: { ...options, chunkSize: 60, chunkOverlap: 0 },
+    }).execute({ userId: "user-1", fileName: "spec.pdf", mimeType: "application/pdf", data: Buffer.from("x") });
+    const ids = (stores.db.prepare("SELECT id FROM document_chunks WHERE document_id = ? ORDER BY chunk_index").all(result.documentId) as Array<{ id: string }>).map((row) => row.id);
+    return stores.vectorStore.getChunks("user-1", ids);
+  }
+
+  it("keeps the physical page of every chunk and stores printed labels next to it when the extractor supplies them", async () => {
+    const chunks = await ingestPaged(true);
+
+    expect(chunks.map(({ pageStart, pageEnd, pageLabelStart, pageLabelEnd }) => ({ pageStart, pageEnd, pageLabelStart, pageLabelEnd }))).toEqual([
+      { pageStart: 5, pageEnd: 5, pageLabelStart: "iii", pageLabelEnd: "iii" },
+      { pageStart: 6, pageEnd: 6, pageLabelStart: "iv", pageLabelEnd: "iv" },
+    ]);
+  });
+
+  it("falls back to the physical pages alone when no labels are available", async () => {
+    const chunks = await ingestPaged(false);
+
+    expect(chunks.map((chunk) => [chunk.pageStart, chunk.pageEnd])).toEqual([
+      [5, 5],
+      [6, 6],
+    ]);
+    expect(chunks.every((chunk) => chunk.pageLabelStart === undefined && chunk.pageLabelEnd === undefined)).toBe(true);
+  });
+});

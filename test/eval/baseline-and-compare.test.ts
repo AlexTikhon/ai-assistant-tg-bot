@@ -8,7 +8,9 @@ import type { EvalCase } from "../../src/eval/dataset.js";
 import { LexiconEmbeddings } from "../../src/eval/lexicon-embeddings.js";
 import { aggregateCases } from "../../src/eval/metrics.js";
 import type { EvalReport, RetrievalSettings } from "../../src/eval/runner.js";
-import { REPO_ROOT } from "./support.js";
+import { DEFAULT_CONFIDENCE_POLICY } from "../../src/core/retrieval-confidence.js";
+import { answerabilityMetrics } from "../../src/eval/answerability.js";
+import { emptyAnswerability, emptySignalSummary, emptySplits, REPO_ROOT } from "./support.js";
 
 const emptyAggregate = aggregateCases([], [1, 3, 5]);
 
@@ -23,6 +25,10 @@ function reportWith(overall: Partial<typeof emptyAggregate>, extra: Partial<Eval
     termCoverage: 1,
     noAnswer: { cases: 0, withContext: 0 },
     isolationViolations: 0,
+    policy: DEFAULT_CONFIDENCE_POLICY,
+    answerability: emptyAnswerability,
+    bySplit: emptySplits(emptyAggregate),
+    signals: { answerable: emptySignalSummary, unanswerable: emptySignalSummary },
     ...extra,
   };
 }
@@ -67,7 +73,7 @@ describe("checkBaseline", () => {
   it("checks a metric of one tag, written tag/metric, so a single broken path cannot hide behind the overall average", () => {
     const withTag = reportWith(
       { recallAt: { 1: 1, 3: 1, 5: 1 }, mrr: 1 },
-      { byTag: { "semantic-only": { ...emptyAggregate, cases: 3, recallAt: { 1: 0, 3: 0.2, 5: 0.2 } } } },
+      { byTag: { "semantic-only": { ...emptyAggregate, queries: 3, answerability: emptyAnswerability, cases: 3, recallAt: { 1: 0, 3: 0.2, 5: 0.2 } } } },
     );
     const result = checkBaseline(withTag, { ...baseline, minimums: { mrr: 0.75, "semantic-only/recallAt3": 0.6 } });
 
@@ -85,6 +91,40 @@ describe("checkBaseline", () => {
   it("refuses a baseline that asks for a K or metric the report does not have", () => {
     expect(() => checkBaseline(reportWith({}), { ...baseline, minimums: { recallAt7: 0.5 } })).toThrow(/recallAt7/);
     expect(() => checkBaseline(reportWith({}), { ...baseline, minimums: { nonsense: 0.5 } })).toThrow(/nonsense/);
+  });
+});
+
+describe("checkBaseline: answerability", () => {
+  const withGate = (matrix: { tp: number; fn: number; fp: number; tn: number }, extra: Partial<EvalReport> = {}) =>
+    reportWith({ recallAt: { 1: 1, 3: 1, 5: 1 }, mrr: 1 }, { answerability: answerabilityMetrics(matrix), ...extra });
+
+  it("guards the recall and the specificity of the confidence gate", () => {
+    const minimums = { answerabilityRecall: 0.9, answerabilitySpecificity: 0.7 };
+
+    expect(checkBaseline(withGate({ tp: 19, fn: 1, fp: 3, tn: 9 }), { ...baseline, minimums }).passed).toBe(true);
+    // a gate that refuses valid questions
+    const refusing = checkBaseline(withGate({ tp: 10, fn: 10, fp: 0, tn: 12 }), { ...baseline, minimums });
+    expect(refusing.checks.filter((check) => !check.ok).map((check) => check.metric)).toEqual(["answerabilityRecall"]);
+    // a gate that lets everything through
+    const open = checkBaseline(withGate({ tp: 20, fn: 0, fp: 12, tn: 0 }), { ...baseline, minimums });
+    expect(open.checks.filter((check) => !check.ok).map((check) => check.metric)).toEqual(["answerabilitySpecificity"]);
+  });
+
+  it("can restrict an answerability metric to one tag", () => {
+    const tagged = withGate(
+      { tp: 5, fn: 0, fp: 0, tn: 5 },
+      { byTag: { "no-answer": { ...emptyAggregate, queries: 5, answerability: answerabilityMetrics({ tp: 0, fn: 0, fp: 4, tn: 1 }) } } },
+    );
+
+    const result = checkBaseline(tagged, { ...baseline, minimums: { "no-answer/answerabilitySpecificity": 0.5 } });
+
+    expect(result.checks).toEqual([{ metric: "no-answer/answerabilitySpecificity", actual: 0.2, minimum: 0.5, ok: false }]);
+  });
+
+  it("refuses a metric that is undefined for the run instead of silently passing", () => {
+    expect(() => checkBaseline(withGate({ tp: 0, fn: 0, fp: 0, tn: 0 }), { ...baseline, minimums: { answerabilityRecall: 0.5 } })).toThrow(
+      /answerabilityRecall.*no/i,
+    );
   });
 });
 
@@ -117,6 +157,8 @@ describe("the committed baseline", () => {
       lexicalLimit: retrieval.lexicalLimit,
       rrfK: retrieval.rrfK,
       contextMaxChars: retrieval.contextMaxChars,
+      exactTokenBonus: retrieval.exactTokenBonus,
+      confidence: retrieval.confidence,
     });
   });
 });
@@ -131,6 +173,8 @@ describe("compareConfigs", () => {
     {
       id: "semantic",
       user: "alice",
+      split: "calibration",
+      answerable: true,
       question: "my dispenser is stuck",
       expectedSources: [{ document: "feeder.md", contains: "jammed feeder" }],
       expectedTerms: [],
@@ -139,6 +183,8 @@ describe("compareConfigs", () => {
     {
       id: "exact",
       user: "alice",
+      split: "calibration",
+      answerable: true,
       question: "ECONNRESET",
       expectedSources: [{ document: "ops.md", contains: "ECONNRESET means" }],
       expectedTerms: [],
@@ -175,6 +221,28 @@ describe("compareConfigs", () => {
     expect(result.settings).toEqual({ ...base, rrfK: 10, topK: 2 });
   });
 
+  it("compares ranking variants and confidence policies without re-indexing", async () => {
+    const results = await compareConfigs({
+      corpus,
+      cases,
+      embeddings,
+      base,
+      configs: [
+        { name: "rrf" },
+        { name: "weighted", lexicalWeight: 2 },
+        { name: "bonus", exactTokenBonus: 1 },
+        { name: "strict gate", confidence: { minSemanticScore: 0.9 } },
+      ],
+    });
+
+    expect(results.map((result) => result.chunkCount)).toEqual([2, 2, 2, 2]);
+    expect(results[1].settings.lexicalWeight).toBe(2);
+    expect(results[2].report.cases[1].retrieved[0].exactMatches).toBe(1);
+    // a partial policy override keeps the other fields of the base policy
+    expect(results[3].settings.confidence).toEqual({ ...DEFAULT_CONFIDENCE_POLICY, ...baseline.config.confidence, minSemanticScore: 0.9 });
+    expect(results[3].report.policy.minSemanticScore).toBe(0.9);
+  });
+
   it("re-indexes only for configurations with a different chunking", async () => {
     const results = await compareConfigs({
       corpus,
@@ -202,6 +270,20 @@ describe("parseComparison", () => {
     );
 
     expect(parsed).toEqual([{ name: "a" }, { name: "b", rrfK: 40, lexicalLimit: 30 }]);
+  });
+
+  it("reads ranking variants and a partial confidence policy", () => {
+    const parsed = parseComparison(
+      JSON.stringify({ configs: [{ name: "w", semanticWeight: 1.5, lexicalWeight: 2, exactTokenBonus: 1, confidence: { minTermCoverage: 0.7 } }] }),
+    );
+
+    expect(parsed[0]).toMatchObject({ semanticWeight: 1.5, lexicalWeight: 2, exactTokenBonus: 1, confidence: { minTermCoverage: 0.7 } });
+  });
+
+  it("rejects negative weights and an out-of-range policy", () => {
+    expect(() => parseComparison(JSON.stringify({ configs: [{ name: "a", lexicalWeight: -1 }] }))).toThrow(/lexicalWeight/);
+    expect(() => parseComparison(JSON.stringify({ configs: [{ name: "a", confidence: { minSemanticScore: 2 } }] }))).toThrow(/minSemanticScore/);
+    expect(() => parseComparison(JSON.stringify({ configs: [{ name: "a", confidence: { nope: 1 } }] }))).toThrow(/nope/);
   });
 
   it("rejects unknown settings, duplicate names and invalid values", () => {

@@ -266,6 +266,9 @@ describe("migration to schema v5", () => {
       ALTER TABLE documents DROP COLUMN index_fingerprint;
       ALTER TABLE document_chunks DROP COLUMN page_start;
       ALTER TABLE document_chunks DROP COLUMN page_end;
+      ALTER TABLE document_chunks DROP COLUMN section_path;
+      ALTER TABLE document_chunks DROP COLUMN page_label_start;
+      ALTER TABLE document_chunks DROP COLUMN page_label_end;
       PRAGMA user_version = 4;
     `);
     first.close();
@@ -294,5 +297,86 @@ describe("native database sanity", () => {
     db.exec("CREATE TABLE t (a, b); ALTER TABLE t DROP COLUMN b;");
     expect(db.prepare("PRAGMA table_info(t)").all()).toHaveLength(1);
     db.close();
+  });
+});
+
+describe("migration to schema v6: section paths and page labels", () => {
+  let directory: string;
+
+  beforeEach(() => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "tg-bot-v6-"));
+  });
+  afterEach(() => {
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("adds the optional provenance columns to an existing database without touching its data", async () => {
+    const dbPath = path.join(directory, "app.db");
+    const first = openDatabase(dbPath, { legacyEmbeddingModel: "m" });
+    first.exec(`
+      INSERT INTO documents (id, user_id, file_name, stored_name, mime_type, file_size, text_length, summary, created_at)
+        VALUES ('d1','u1','old.md','s-old.md','text/markdown',10,10,NULL,'2025-01-01T00:00:00Z');
+      INSERT INTO document_chunks (id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, page_start, page_end, created_at)
+        VALUES ('c1','d1','u1',0,'legacy text',x'0000803f','m',1,3,4,'2025-01-01T00:00:00Z');
+    `);
+    first.exec(`
+      ALTER TABLE document_chunks DROP COLUMN section_path;
+      ALTER TABLE document_chunks DROP COLUMN page_label_start;
+      ALTER TABLE document_chunks DROP COLUMN page_label_end;
+      PRAGMA user_version = 5;
+    `);
+    first.close();
+
+    const db = openDatabase(dbPath, { legacyEmbeddingModel: "m" });
+
+    expect(db.pragma("user_version", { simple: true })).toBeGreaterThanOrEqual(6);
+    expect(db.prepare("SELECT section_path AS s, page_label_start AS a, page_label_end AS b FROM document_chunks").get()).toEqual({
+      s: null,
+      a: null,
+      b: null,
+    });
+    // An old chunk reads back exactly as before: pages kept, no invented section or labels.
+    const [chunk] = await new SqliteVectorStore(db).getChunks("u1", ["c1"]);
+    expect(chunk).toMatchObject({ content: "legacy text", pageStart: 3, pageEnd: 4 });
+    expect(chunk).not.toHaveProperty("sectionPath");
+    expect(chunk).not.toHaveProperty("pageLabelStart");
+    db.close();
+  });
+});
+
+describe("chunk provenance in the store", () => {
+  it("round-trips a section path and page labels, and returns nothing for chunks without them", async () => {
+    const { documents, vectorStore } = createTestStores();
+    await documents.saveWithChunks(makeDocument({ id: "doc-1", fileName: "api.md" }), [
+      makeChunk({ id: "with", chunkIndex: 0, sectionPath: ["Authentication", "Refresh tokens"], content: "a" }),
+      makeChunk({ id: "labelled", chunkIndex: 1, pageStart: 5, pageEnd: 6, pageLabelStart: "iii", pageLabelEnd: "iv", content: "b" }),
+      makeChunk({ id: "plain", chunkIndex: 2, content: "c" }),
+    ]);
+
+    const byId = new Map((await vectorStore.getChunks("user-1", ["with", "labelled", "plain"])).map((chunk) => [chunk.chunkId, chunk]));
+
+    expect(byId.get("with")?.sectionPath).toEqual(["Authentication", "Refresh tokens"]);
+    expect(byId.get("labelled")).toMatchObject({ pageStart: 5, pageEnd: 6, pageLabelStart: "iii", pageLabelEnd: "iv" });
+    expect(byId.get("plain")).not.toHaveProperty("sectionPath");
+    expect(byId.get("plain")).not.toHaveProperty("pageLabelStart");
+  });
+
+  it("treats an unreadable stored section path as unknown instead of failing the search", async () => {
+    const { db, documents, vectorStore } = createTestStores();
+    await documents.saveWithChunks(makeDocument({ id: "doc-1" }), [makeChunk({ id: "c1", content: "a" })]);
+    db.prepare("UPDATE document_chunks SET section_path = '{not json'").run();
+
+    const [chunk] = await vectorStore.getChunks("user-1", ["c1"]);
+
+    expect(chunk.content).toBe("a");
+    expect(chunk).not.toHaveProperty("sectionPath");
+  });
+
+  it("does not return a section path that is not a list of strings", async () => {
+    const { db, documents, vectorStore } = createTestStores();
+    await documents.saveWithChunks(makeDocument({ id: "doc-1" }), [makeChunk({ id: "c1", content: "a" })]);
+    db.prepare("UPDATE document_chunks SET section_path = '[1,2]'").run();
+
+    expect(await vectorStore.getChunks("user-1", ["c1"])).not.toEqual([expect.objectContaining({ sectionPath: expect.anything() })]);
   });
 });
