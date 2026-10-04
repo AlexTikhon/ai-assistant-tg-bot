@@ -4,13 +4,19 @@ import type { FileStorage } from "../../src/application/ports/file-storage.js";
 import type { DocumentTextExtractor, ExtractionInput } from "../../src/application/ports/text-extractor.js";
 import type { ChunkRecord, DocumentRecord } from "../../src/core/document.js";
 import { openDatabase } from "../../src/infrastructure/sqlite/database.js";
+import { SqliteIndexMaintenance } from "../../src/infrastructure/sqlite/sqlite-index-maintenance.js";
 import { SqliteDocumentRepository } from "../../src/infrastructure/sqlite/sqlite-document-repository.js";
 import { SqliteVectorStore } from "../../src/infrastructure/sqlite/sqlite-vector-store.js";
 
 /** Fresh in-memory SQLite database with the real schema, repository and vector store. */
 export function createTestStores() {
   const db = openDatabase(":memory:", { legacyEmbeddingModel: "test-model" });
-  return { db, documents: new SqliteDocumentRepository(db), vectorStore: new SqliteVectorStore(db) };
+  return {
+    db,
+    documents: new SqliteDocumentRepository(db),
+    vectorStore: new SqliteVectorStore(db),
+    maintenance: new SqliteIndexMaintenance(db),
+  };
 }
 
 /**

@@ -3,6 +3,11 @@ import { z } from "zod";
 
 const positiveInt = (fallback: number) => z.coerce.number().int().positive().default(fallback);
 
+const booleanFlag = z
+  .enum(["true", "false"])
+  .default("false")
+  .transform((value) => value === "true");
+
 const envSchema = z
   .object({
     TELEGRAM_BOT_TOKEN: z.string().min(1),
@@ -19,14 +24,16 @@ const envSchema = z
     CHUNK_OVERLAP: z.coerce.number().int().min(0).default(150),
     RETRIEVAL_TOP_K: positiveInt(5),
     MIN_SIMILARITY_SCORE: z.coerce.number().min(-1).max(1).default(0.2),
+    RETRIEVAL_SEMANTIC_LIMIT: positiveInt(20),
+    RETRIEVAL_LEXICAL_LIMIT: positiveInt(20),
+    RETRIEVAL_CONTEXT_MAX_CHARS: positiveInt(6000),
+
 
     REQUEST_TIMEOUT_MS: positiveInt(60_000),
     HANDLER_TIMEOUT_MS: positiveInt(300_000),
 
-    LOG_QUESTIONS: z
-      .enum(["true", "false"])
-      .default("false")
-      .transform((value) => value === "true"),
+    LOG_QUESTIONS: booleanFlag,
+    RAG_DEBUG: booleanFlag,
   })
   .refine((env) => env.CHUNK_OVERLAP < env.CHUNK_SIZE, {
     message: "CHUNK_OVERLAP must be smaller than CHUNK_SIZE",
@@ -76,7 +83,11 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     retrieval: {
       topK: env.RETRIEVAL_TOP_K,
       minScore: env.MIN_SIMILARITY_SCORE,
+      semanticLimit: env.RETRIEVAL_SEMANTIC_LIMIT,
+      lexicalLimit: env.RETRIEVAL_LEXICAL_LIMIT,
+      contextMaxChars: env.RETRIEVAL_CONTEXT_MAX_CHARS,
     },
     logQuestions: env.LOG_QUESTIONS,
+    ragDebug: env.RAG_DEBUG,
   } as const;
 }

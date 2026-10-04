@@ -94,20 +94,30 @@ describe("requireUserId / getMessageText", () => {
 });
 
 describe("formatAnswer", () => {
-  const source = (documentId: string, fileName: string, chunkIndex: number) => ({
-    documentId,
+  const source = (rank: number, fileName: string, chunkIndex: number) => ({
+    documentId: fileName,
     fileName,
     chunkIndex,
+    rank,
     score: 0.9,
   });
 
-  it("groups cited parts per document", () => {
+  it("lists sources in the order the model saw them, numbered like its [n] citations", () => {
     const result: AnswerQuestionResult = {
       answer: "The answer.",
-      sources: [source("1", "a.pdf", 4), source("2", "b.md", 0), source("1", "a.pdf", 1)],
+      sources: [source(1, "architecture.pdf", 11), source(2, "notes.md", 3), source(3, "architecture.pdf", 0)],
     };
 
-    expect(formatAnswer(result)).toBe("The answer.\n\nSources:\n- a.pdf (parts 2, 5)\n- b.md (part 1)");
+    expect(formatAnswer(result)).toBe(
+      "The answer.\n\nSources:\n1. architecture.pdf · chunk 12\n2. notes.md · chunk 4\n3. architecture.pdf · chunk 1",
+    );
+  });
+
+  it("does not leak retrieval internals (scores, ids) to the user", () => {
+    const text = formatAnswer({ answer: "A.", sources: [source(1, "a.pdf", 0)] });
+
+    expect(text).not.toContain("0.9");
+    expect(text).not.toContain("score");
   });
 
   it("states when there are no sources", () => {

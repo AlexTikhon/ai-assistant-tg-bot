@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { encodeVector } from "../../core/vectors.js";
 
 export type MigrationContext = {
   /**
@@ -13,6 +14,31 @@ type Migration = {
   name: string;
   up(db: Database.Database, context: MigrationContext): void;
 };
+
+type ChunkRowV2 = {
+  id: string;
+  document_id: string;
+  user_id: string;
+  chunk_index: number;
+  content: string;
+  embedding: string;
+  embedding_model: string;
+  embedding_dim: number;
+  created_at: string;
+};
+
+/** Converts a JSON-array vector (schema v2) to the blob format; anything unreadable becomes an empty blob. */
+function jsonToBlob(json: string): { embedding: Buffer; embedding_dim: number } {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (Array.isArray(parsed)) {
+      return { embedding: encodeVector(parsed), embedding_dim: parsed.length };
+    }
+  } catch {
+    // unreadable: flagged below
+  }
+  return { embedding: Buffer.alloc(0), embedding_dim: 0 };
+}
 
 /**
  * Ordered, append-only list of schema changes. The applied version lives in `PRAGMA user_version`.
@@ -96,6 +122,84 @@ export const migrations: Migration[] = [
         -- /list: a user's documents, newest first. Replaces the user_id-only index.
         DROP INDEX IF EXISTS idx_documents_user_id;
         CREATE INDEX idx_documents_user_created ON documents(user_id, created_at DESC);
+      `);
+    },
+  },
+  {
+    version: 3,
+    name: "store embeddings as float32 blobs, add a stable integer key to chunks",
+    up(db) {
+      // `seq` is an explicit INTEGER PRIMARY KEY so it survives VACUUM; the full-text index (v4) refers to it.
+      db.exec(`
+        CREATE TABLE document_chunks_v3 (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT NOT NULL UNIQUE,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL,
+          chunk_index INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          embedding BLOB NOT NULL,
+          embedding_model TEXT NOT NULL,
+          embedding_dim INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE (document_id, chunk_index)
+        );
+      `);
+
+      const insert = db.prepare(
+        `INSERT INTO document_chunks_v3
+           (id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at)
+         VALUES (@id, @document_id, @user_id, @chunk_index, @content, @embedding, @embedding_model, @embedding_dim, @created_at)`,
+      );
+      // Paged (a connection cannot write while a read cursor is open, and vectors in JSON are large).
+      const page = db.prepare<[number], ChunkRowV2 & { rowid: number }>(
+        "SELECT rowid, * FROM document_chunks WHERE rowid > ? ORDER BY rowid LIMIT 500",
+      );
+      for (let lastRowId = 0, rows = page.all(lastRowId); rows.length > 0; rows = page.all(lastRowId)) {
+        for (const row of rows) {
+          // Unreadable vectors keep their row (the text is still searchable) but are flagged with dimension 0.
+          insert.run({ ...row, ...jsonToBlob(row.embedding) });
+          lastRowId = row.rowid;
+        }
+      }
+
+      db.exec(`
+        DROP TABLE document_chunks;
+        ALTER TABLE document_chunks_v3 RENAME TO document_chunks;
+        CREATE INDEX idx_chunks_user_model ON document_chunks(user_id, embedding_model);
+      `);
+    },
+  },
+  {
+    version: 4,
+    name: "full-text (FTS5) index over chunk content, kept in sync by triggers",
+    up(db) {
+      const fts5 = db.prepare<[], { enabled: number }>("SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled").get();
+      if (!fts5?.enabled) {
+        throw new Error("This SQLite build does not support FTS5, which hybrid search requires.");
+      }
+
+      // External-content index: the text stays in document_chunks, FTS5 only stores the token index.
+      db.exec(`
+        CREATE VIRTUAL TABLE chunk_fts USING fts5(
+          content,
+          content='document_chunks',
+          content_rowid='seq',
+          tokenize='unicode61 remove_diacritics 2'
+        );
+
+        CREATE TRIGGER chunks_fts_insert AFTER INSERT ON document_chunks BEGIN
+          INSERT INTO chunk_fts(rowid, content) VALUES (new.seq, new.content);
+        END;
+        CREATE TRIGGER chunks_fts_delete AFTER DELETE ON document_chunks BEGIN
+          INSERT INTO chunk_fts(chunk_fts, rowid, content) VALUES ('delete', old.seq, old.content);
+        END;
+        CREATE TRIGGER chunks_fts_update AFTER UPDATE OF content ON document_chunks BEGIN
+          INSERT INTO chunk_fts(chunk_fts, rowid, content) VALUES ('delete', old.seq, old.content);
+          INSERT INTO chunk_fts(rowid, content) VALUES (new.seq, new.content);
+        END;
+
+        INSERT INTO chunk_fts(chunk_fts) VALUES ('rebuild');
       `);
     },
   },

@@ -1,4 +1,4 @@
-import type { RetrievedChunk } from "../../core/document.js";
+import type { RetrievedChunk } from "../../core/retrieval.js";
 import type { ChatMessage } from "../ports/chat-model.js";
 
 export const ANSWER_QUESTION_SYSTEM_PROMPT = `
@@ -15,7 +15,7 @@ Rules:
 /** Renders retrieved chunks as numbered, clearly delimited reference excerpts. */
 export function formatContext(chunks: RetrievedChunk[]) {
   return chunks
-    .map((chunk, index) => `[${index + 1}] ${chunk.fileName}, part ${chunk.chunkIndex + 1}\n${chunk.content}`)
+    .map((chunk, index) => `[${index + 1}] ${chunk.fileName}, chunk ${chunk.chunkIndex + 1}\n${chunk.content}`)
     .join("\n\n---\n\n");
 }
 

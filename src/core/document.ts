@@ -44,20 +44,13 @@ export type ChunkText = {
   content: string;
 };
 
-/** A chunk returned by similarity search, enriched with the source document info. */
-export type RetrievedChunk = {
-  chunkId: string;
-  documentId: string;
-  fileName: string;
-  chunkIndex: number;
-  content: string;
-  score: number;
-};
-
 /** Where part of an answer came from. Presentation is up to the caller. */
 export type Citation = {
   documentId: string;
   fileName: string;
   chunkIndex: number;
+  /** 1-based position in the context the model saw - the number the answer cites as [n]. */
+  rank: number;
+  /** Fused retrieval score (reciprocal rank fusion): only meaningful relative to other sources. */
   score: number;
 };

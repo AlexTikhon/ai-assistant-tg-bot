@@ -40,3 +40,8 @@ export const logger = pino({
 });
 
 export type Logger = typeof logger;
+
+/** The one-method views of a logger that application code needs (so tests can pass a plain function). */
+type LogFn = (fields: Record<string, unknown>, message: string) => void;
+export type InfoLog = { info: LogFn };
+export type WarnLog = { warn: LogFn };

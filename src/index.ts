@@ -9,6 +9,7 @@ try {
   const app = createApplication(config);
 
   try {
+    await app.checkIndex().catch((err) => logger.warn({ err }, "Index compatibility check failed"));
     await runApplication(app);
     logger.info({ env: config.nodeEnv }, "Application started");
   } catch (error) {
