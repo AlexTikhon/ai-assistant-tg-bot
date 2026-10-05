@@ -1,116 +1,118 @@
 # ai-knowledge-assistant-tg-bot
 
-Telegram bot for personal document Q&A. Upload a PDF, Markdown or text file, then ask questions (typed or spoken) and get answers grounded in your own documents, with numbered sources - or an honest "I couldn't find enough information" when the documents do not hold the answer.
+Telegram bot for personal document Q&A. Upload a PDF, Markdown or text file, then ask questions (typed or spoken) and get answers grounded in **your own documents**, with numbered sources - or an honest "I couldn't find enough information" when the documents do not hold the answer.
 
-Everything runs locally except the OpenAI calls: files live on disk; metadata, vectors and the full-text index live in one SQLite file.
+Everything runs locally except the OpenAI calls: files live on disk; metadata, vectors and the full-text index live in one SQLite file. TypeScript, Telegraf, SQLite (WAL, FTS5). No vector database, queue or other service.
 
-## What it does
+## Features
 
-- **Hybrid retrieval**: semantic vector search *and* SQLite FTS5 keyword search, fused with reciprocal rank fusion; chunks that contain an exact identifier from the question (`E-4012`, `ECONNRESET`, `v2.14.1`) get extra evidence.
-- **Answers only with evidence**: a deterministic confidence gate runs *before* the chat model. In `enforce` mode weak or unrelated context, or an identifier that exists nowhere in your documents, gets a short refusal and no generation cost. The default is `shadow`: the decision is logged but answers are unchanged, until the threshold has been checked against real embeddings.
-- **Document lifecycle**: identical uploads are recognised (per user, by content hash) and cost nothing; `/replace` swaps a document's content without ever leaving it half-indexed; `npm run integrity` and `npm run backup` check and protect the stored data.
-- **Citations you can follow**: numbered sources match the `[n]` in the answer and show the best location known - PDF pages (`pp. 8–9`), Markdown sections (`Authentication > Refresh tokens`) or the chunk number. References to sources that do not exist are removed.
-- Voice questions, map-reduce summaries, strict per-user isolation, per-user storage and rate limits.
-- **Index profile**: every document records how it was indexed; `npm run reindex` shows what is stale and why, re-embeds or re-chunks atomically.
-- **Offline evaluation**: Recall@K / MRR, an answerability confusion matrix, a calibration/validation split, ranking experiments and a regression gate - no OpenAI key needed.
+- **Hybrid retrieval** - semantic vector search *and* SQLite FTS5 keyword search, fused with reciprocal rank fusion; exact identifiers (`E-4012`, `ECONNRESET`, `v2.14.1`) get extra evidence.
+- **Answers only with evidence** - a deterministic confidence gate runs *before* the chat model. `RETRIEVAL_CONFIDENCE_MODE=shadow` (the default) decides and logs but **never changes a reply**; `enforce` refuses weak evidence without calling the model - switch only after validating on real embeddings ([docs/rag.md](docs/rag.md#rolling-out-the-gate)).
+- **Citations you can follow** - PDF pages, Markdown sections or chunk numbers; references to sources that do not exist are removed.
+- **Document lifecycle** - identical uploads recognised by content hash, `/replace` that never leaves a document half-indexed, index health, re-embed / re-chunk workflows.
+- **Operable** - integrity check with a deep full-text verification, safe repair, **backup, verified restore**, diagnostics, SQLite maintenance, structured logs, graceful shutdown.
+- **Safe by default** - strict per-user isolation (enforced by the schema too), server-generated file names, file-type validation, bounded inputs, secrets scrubbed from every output ([docs/security.md](docs/security.md)).
+- **Offline evaluation** - Recall@K / MRR, answerability confusion matrix, calibration/validation split, regression gate; no API key needed.
 
-```text
-Q: What does ECONNREFUSED mean?       (not in any document; with RETRIEVAL_CONFIDENCE_MODE=enforce)
--> I couldn't find enough information in your uploaded documents to answer that.   [chat model not called]
+## Architecture
 
-Q: Why do connections fail with ECONNRESET?
--> ECONNRESET means the supplier broker closed the connection ... [1]
-   Sources:
-   [1] operations.md · Feed Ingestion Operations Runbook > Common errors > ECONNRESET
+```mermaid
+flowchart TB
+  TG([Telegram]) --> AD[telegram adapter]
+  AD --> UC[application use cases]
+  UC --> RP[retrieval policy: confidence gate]
+  RP --> HR[hybrid retriever]
+  HR --> VEC[vector search]
+  HR --> FTS[FTS5 keyword search]
+  UC --> LC[document lifecycle]
+  VEC & FTS & LC --> DB[(SQLite)]
+  LC --> FILES[(file storage)]
+  UC -. embeddings / chat / speech .-> OAI([OpenAI])
+  OPS[backup / restore / integrity / reindex] --> DB & FILES
 ```
 
-A full walk-through with real pipeline output: [docs/rag.md](docs/rag.md#worked-example).
+Dependencies point inwards (`telegram/` -> `application/` -> `core/`; `infrastructure/` implements the ports; `composition-root.ts` wires it) and `test/architecture.test.ts` enforces it. Details: [docs/architecture.md](docs/architecture.md) · RAG pipeline: [docs/rag.md](docs/rag.md).
 
 ## Quick start
 
-Requires Node.js 20+.
+Node.js **22.12+ or 24** (`.nvmrc`).
 
 ```bash
-npm install
-cp .env.example .env      # set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY
-npm run dev               # or: npm run build && npm start
+git clone <repo> && cd <repo>
+npm ci
+npm run check                 # typecheck, tests, build, smoke - no credentials, no network
+cp .env.example .env          # set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY
+npm start                     # node dist/index.js      (development: npm run dev)
 ```
 
-## Commands
+## Docker
 
-| Command | Description |
-| --- | --- |
-| `/start`, `/help` | Introduction and command list |
-| `/list` | Your documents with id, size, date and state (`ready`, `index outdated`, ...) |
-| `/doc <documentId>` | Details of one document |
-| `/ask <question>` | Ask about your documents. Plain text works too |
-| `/summary <documentId>` | Short summary of a document |
-| `/delete <documentId>` | Delete a document, its vectors and its file |
-| `/replace <documentId>` | How to replace a document: send the new file with the caption `/replace <documentId>` |
-
-Sending a file uploads it - the same file again is recognised ("already in your knowledge base") and costs nothing; the same name with different content is a second document, replaced only on purpose with `/replace`. Sending a voice message asks a question.
-
-## Architecture in one picture
-
-```text
-telegram/ (handlers)  ->  application/ (use cases, HybridRetriever, ports)  ->  core/ (pure logic)
-                                      ^
-infrastructure/ (SQLite, OpenAI, files, PDF) implements the ports; composition-root.ts wires everything
+```bash
+docker build -t telegram-rag-bot .
+docker run -d --name rag-bot --init --restart unless-stopped --env-file .env -v rag-bot-data:/data telegram-rag-bot
 ```
 
-Dependencies point inwards and `test/architecture.test.ts` enforces it. Details, storage schema, migrations, re-indexing and limits: [docs/architecture.md](docs/architecture.md). The RAG pipeline, the confidence gate, exact tokens and provenance: [docs/rag.md](docs/rag.md).
+Multi-stage Debian-slim image, non-root user, production dependencies only, no secrets baked in. All data lives in the `/data` volume (`app.db` + `files/`). `docker compose up -d --build` does the same. Persistence, shutdown, health signals: [docs/operations.md](docs/operations.md#docker).
 
-## Configuration
+## Bot commands
 
-Copy `.env.example`; each command validates only the settings it uses (the evaluation commands need no secrets).
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` | required by the bot | Credentials |
-| `OPENAI_CHAT_MODEL` / `OPENAI_EMBEDDINGS_MODEL` | `gpt-4.1-mini` / `text-embedding-3-small` | Models (changing the embeddings model: run `npm run reindex`, re-check the gate) |
-| `DATA_DIR` | `data` | `app.db` and `files/` |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `150` | Chunking (part of the index profile) |
-| `RETRIEVAL_TOP_K` | `5` | Chunks passed to the model |
-| `RETRIEVAL_SEMANTIC_LIMIT` / `RETRIEVAL_LEXICAL_LIMIT` / `RETRIEVAL_RRF_K` | `20` / `20` / `60` | Candidate depth and the RRF constant |
-| `RETRIEVAL_EXACT_TOKEN_BONUS` | `1` | Extra rank evidence for verbatim identifiers; `0` turns it off |
-| `RETRIEVAL_CONFIDENCE_MODE` | `shadow` | `off`, `shadow` (decide and log, never refuse) or `enforce` (refuse before the chat model when the evidence is weak) - see [docs/rag.md](docs/rag.md#rolling-out-the-gate) |
-| `RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE` / `..._MIN_TERM_COVERAGE` | `0.5` / `0.6` | Gate thresholds, calibrated offline - see [docs/evaluation.md](docs/evaluation.md) |
-| `MAX_DOCUMENTS_PER_USER`, `MAX_STORAGE_BYTES_PER_USER`, `MAX_CHUNKS_PER_DOCUMENT` | `100`, `200 MB`, `2000` | Per-user limits |
-| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_MS` | `10` / `60000` | Expensive operations per user per window |
-| `LOG_LEVEL`, `LOG_QUESTIONS`, `RAG_DEBUG` | `info`, `false`, `false` | Logging (never document text or secrets) |
-| `FEEDBACK_BUTTONS` | `false` | 👍/👎 under answers, stored with the gate's decision (to calibrate it on real use) |
-
-More variables (timeouts, upload size, `MIN_SIMILARITY_SCORE`, context budget) are listed in `.env.example`.
+`/start`, `/help` · `/list` (documents with id, size, date, state) · `/doc <id>` (details) · `/ask <question>` or plain text · `/summary <id>` · `/delete <id>` · `/replace <id>` (send the new file with the caption `/replace <id>`). Sending a file uploads it; a voice message asks a question.
 
 ## Operating it
 
+Operational commands run **compiled code** (`npm run build` first) and need no API key or bot token:
+
 ```bash
-npm run integrity                      # read-only check of documents, chunks, vectors, full-text index, files, hashes
-npm run integrity -- --repair          # only safe, free repairs (full-text index, content hashes, stale temp files)
-npm run reindex -- --dry-run           # which documents are stale, and whether they need a re-embed or a re-chunk
-npm run backup -- --output ./backups/x # consistent snapshot: database + originals + manifest (no secrets)
-npm run backup:verify -- ./backups/x   # manifest, hashes, database, integrity of the copy
+npm run integrity [-- --repair]                   # deep, read-only check; --repair = safe, verified fixes only
+npm run backup -- --output ./backups/x            # consistent snapshot: database + originals + manifest (no secrets)
+npm run backup:verify -- ./backups/x              # manifest, hashes, database, integrity
+npm run restore -- --from ./backups/x [--dry-run] [--replace-existing]
+npm run diagnostics                               # versions, counts, health - safe for bug reports
+npm run db:maintenance                            # SQLite integrity_check (+ --checkpoint / --optimize / --vacuum)
+npm run reindex -- --dry-run                      # which documents are stale, and why
 ```
 
-Lifecycle, failure semantics, index health, integrity, backup and restore: [docs/architecture.md](docs/architecture.md#document-lifecycle).
+**Backup and restore.** A restore verifies the backup, builds and migrates a candidate in a staging directory, runs the full integrity check on it and only then activates it - one atomic rename. It refuses to replace an installation that holds data without `--replace-existing`, keeps the replaced one, and leaves the live data untouched on any failure. Formats, atomicity and failure semantics, the SQLite settings, upgrades and worked scenarios (deployment, restart, recovery, hostile file name, damaged index): [docs/operations.md](docs/operations.md).
+
+## Configuration
+
+Copy `.env.example`; each command validates only what it uses.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` | required by the bot | credentials (environment only) |
+| `DATA_DIR` | `data` (`/data` in Docker) | `app.db` and `files/` |
+| `OPENAI_CHAT_MODEL` / `OPENAI_EMBEDDINGS_MODEL` | `gpt-4.1-mini` / `text-embedding-3-small` | changing the embeddings model: `npm run reindex` |
+| `RETRIEVAL_CONFIDENCE_MODE` | `shadow` | `off`, `shadow`, `enforce` |
+| `MAX_UPLOAD_BYTES`, `MAX_DOCUMENTS_PER_USER`, `MAX_STORAGE_BYTES_PER_USER`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_PDF_PAGES` | 10 MB, 100, 200 MB, 2000, 1000 | bounds |
+| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_MS` | `10` / `60000` | per user |
+| `LOG_LEVEL`, `LOG_QUESTIONS`, `RAG_DEBUG` | `info`, `false`, `false` | logging: [what may be logged](docs/security.md#what-may-be-logged) |
+
+Everything else (chunking, retrieval depth, thresholds, timeouts, feedback buttons): `.env.example`.
 
 ## Testing and evaluation
 
 ```bash
-npm run typecheck && npm test        # no network access; real OpenAI/Telegram are never called
-npm run eval:retrieval               # Recall@K, MRR, answerability, per tag and per split (offline, deterministic)
-npm run eval:confidence              # calibrate the confidence gate on the calibration split
-npm run test:retrieval               # regression gate against eval/baseline.json
-npm run bench:retrieval              # timings per stage
-npm run eval:retrieval:live          # real embeddings: prints the plan and stops; costs money only with --confirm-spend
+npm run typecheck && npm test         # 1,300+ tests; real SQLite, no network, never OpenAI or Telegram
+npm run smoke                         # the whole lifecycle through the compiled application, offline providers
+npm run smoke:cli                     # the operational commands from compiled code, without credentials
+npm run test:coverage                 # coverage as a diagnostic (no threshold)
+npm run eval:retrieval                # Recall@K, MRR, answerability (offline, deterministic)
+npm run eval:confidence               # confidence-gate calibration on the calibration split
+npm run test:retrieval                # regression gate against eval/baseline.json
+npm run eval:retrieval:live           # real embeddings: prints the plan; costs money only with --confirm-spend
 ```
 
-Current offline numbers (dataset v2, 44 answerable + 17 unanswerable questions; a small synthetic corpus, so read them as a regression harness, not a benchmark): Recall@1/3/5 = 0.82 / 0.95 / 1.00, MRR 0.92; the gate lets 98% of answerable questions through and refuses 71% of unanswerable ones (validation split reported separately). Method, honest limits and the live-evaluation workflow: [docs/evaluation.md](docs/evaluation.md).
+CI (`.github/workflows/ci.yml`) runs the deterministic checks on Node 24 and 22, the Docker image checks and a dependency audit - no secrets. Offline numbers, method and limits: [docs/evaluation.md](docs/evaluation.md).
+
+## Project docs
+
+[docs/architecture.md](docs/architecture.md) (layers, schema, lifecycle, failure semantics) · [docs/rag.md](docs/rag.md) (pipeline, gate, provenance) · [docs/evaluation.md](docs/evaluation.md) · [docs/operations.md](docs/operations.md) (run, Docker, backup/restore, scenarios) · [docs/security.md](docs/security.md) (threat model, logging rule)
 
 ## Known limitations
 
-- Semantic search is a brute-force scan of the user's vectors (fine for thousands of chunks, not millions); the `VectorStore` port is the seam for an ANN index.
-- Keyword matching is token based (no stemming or synonyms); the semantic side covers paraphrases.
-- The confidence gate is a filter, not a verdict: wording close to real content can still pass (5 of 17 unanswerable questions in the evaluation), and its similarity threshold was calibrated on a synthetic embedder and **not yet validated against real embeddings** - which is why it runs in `shadow` mode by default.
-- Scanned PDFs without a text layer are rejected (no OCR). PDF citations refer to the physical PDF page index; printed page labels are not read (the PDF library reports them incorrectly - [docs/rag.md](docs/rag.md#provenance-and-citations)). Markdown sections (ATX and Setext headings) need `npm run reindex -- --rechunk` for documents indexed before this feature.
-- The rate limit is per process and resets on restart; single process only (SQLite file, long polling). There is no restore command: restoring a backup is a manual, documented copy.
+- Semantic search is a brute-force scan of one user's vectors (thousands of chunks, not millions); the `VectorStore` port is the seam for an ANN index.
+- The confidence gate's similarity threshold (0.5) was calibrated on synthetic embeddings and is **not validated against real embeddings** - hence `shadow` by default.
+- No OCR (scanned PDFs are rejected); PDF citations use physical page indexes.
+- Single process (SQLite file, long polling); the rate limit is in memory and resets on restart.
+- Backups are not encrypted and contain every user's documents; the host is trusted storage ([threat model](docs/security.md)).

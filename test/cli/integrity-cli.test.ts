@@ -73,7 +73,7 @@ describe("formatRepairResult", () => {
   it("prints exactly what was changed", () => {
     const result: RepairResult = {
       actions: [
-        { kind: "rebuilt-full-text-index" },
+        { kind: "rebuilt-full-text-index", verified: { chunks: 12, searchesChecked: 12, contentCheck: "compared" } },
         { kind: "backfilled-content-hash", documentId: "d1", fileName: "a.txt" },
         { kind: "removed-temporary-file", file: ".tmp-1.part" },
         { kind: "removed-orphan-file", file: "stray.txt" },
@@ -84,7 +84,7 @@ describe("formatRepairResult", () => {
 
     const text = formatRepairResult(result);
 
-    expect(text).toContain("rebuilt the full-text index");
+    expect(text).toContain("rebuilt the full-text index and verified it (12 chunks indexed, 12 sample searches ok, content compared with the chunk text)");
     expect(text).toContain("recorded the content hash of a.txt (d1)");
     expect(text).toContain("removed temporary file .tmp-1.part");
     expect(text).toContain("removed orphan file stray.txt");

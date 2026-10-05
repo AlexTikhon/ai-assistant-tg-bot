@@ -1,20 +1,15 @@
 import path from "node:path";
 
-const MAX_BASE_NAME_LENGTH = 100;
-
 /** Returns the lowercase file extension including the leading dot. */
 export function getFileExtension(fileName: string) {
   return path.extname(fileName).toLowerCase();
 }
 
-/** Sanitizes a user-supplied file name so it is safe and reasonably short on disk. */
-export function getSafeFileName(fileName: string) {
+/**
+ * The extension a stored file gets: only one of the formats the application accepts, else none. A user-supplied name never reaches
+ * the file system in any other form - stored files are named `<uuid><extension>` (see LocalFileStorage).
+ */
+export function storedFileExtension(fileName: string, allowed: ReadonlySet<string>) {
   const extension = getFileExtension(fileName);
-  const base = path
-    .basename(fileName, path.extname(fileName))
-    .replace(/[^\w-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, MAX_BASE_NAME_LENGTH);
-
-  return `${base || "document"}${extension.replace(/[^\w.]/g, "")}`;
+  return allowed.has(extension) ? extension : "";
 }

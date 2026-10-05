@@ -109,7 +109,9 @@ export function formatIntegrityReport(report: IntegrityReport) {
 function describeAction(action: RepairAction) {
   switch (action.kind) {
     case "rebuilt-full-text-index":
-      return "rebuilt the full-text index";
+      return `rebuilt the full-text index and verified it (${action.verified.chunks} chunks indexed, ${action.verified.searchesChecked} sample searches ok, content ${action.verified.contentCheck === "compared" ? "compared with the chunk text" : "comparison skipped"})`;
+    case "removed-restore-staging":
+      return `removed the working directory of an interrupted restore (${action.name})`;
     case "backfilled-content-hash":
       return `recorded the content hash of ${action.fileName} (${action.documentId})`;
     case "removed-temporary-file":

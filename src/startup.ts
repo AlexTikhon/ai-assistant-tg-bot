@@ -43,11 +43,13 @@ export async function startBot(deps: Dependencies): Promise<StartResult> {
     app = deps.createApplication(config as never);
   } catch (err) {
     const stage = err instanceof StartupError ? err.stage : "database";
-    log.fatal({ stage, err }, `Startup failed at the ${stage} stage; the bot was not started`);
+    log.fatal({ stage, err, ...(err instanceof StartupError && err.advice ? { advice: err.advice } : {}) }, `Startup failed at the ${stage} stage; the bot was not started`);
     return { exitCode: 1 };
   }
-  log.info({ stage: "database", schemaVersion: app.readiness.schemaVersion }, "Database ready");
+  log.info({ stage: "database", schemaVersion: app.readiness.schemaVersion, version: app.readiness.version }, "Database ready");
   log.info({ stage: "storage", dataDir: app.readiness.dataDir }, "Storage ready");
+  // Shadow computes the answerability decision and logs it, but never changes a reply; enforce is an explicit operator decision.
+  log.info({ stage: "retrieval", confidenceMode: app.readiness.confidenceMode }, `Retrieval confidence gate: ${app.readiness.confidenceMode}`);
 
   try {
     // A diagnostic: it must never be the reason the bot does not start.

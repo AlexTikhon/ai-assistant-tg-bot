@@ -1,8 +1,10 @@
 import "dotenv/config";
+import "./quiet-logs.js";
 import path from "node:path";
 import { loadToolConfig } from "../config/config.js";
 import { verifyBackup } from "../infrastructure/backup/verify-backup.js";
 import { formatVerification, parseVerifyArgs, VERIFY_USAGE } from "./backup-cli.js";
+import { runCli } from "./run-cli.js";
 
 /** `npm run backup:verify -- <directory>`. Read-only; exit code 1 when the backup has problems. */
 async function main() {
@@ -26,12 +28,4 @@ async function main() {
   return result.ok ? 0 : 1;
 }
 
-main().then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exitCode = 1;
-  },
-);
+runCli(main);

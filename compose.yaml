@@ -1,0 +1,21 @@
+# Local operation of the bot: `docker compose up -d --build`.
+# It adds nothing a plain `docker run` lacks except convenience: the .env file, one named volume, a restart policy.
+# There are no other services - the bot talks to Telegram and OpenAI over the internet and keeps its data in SQLite.
+services:
+  bot:
+    build: .
+    image: telegram-rag-bot:local
+    # TELEGRAM_BOT_TOKEN and OPENAI_API_KEY (and any other setting) come from a local .env file that is never part of the image.
+    env_file: .env
+    environment:
+      # Set after env_file, so a DATA_DIR=./data meant for running the bot outside Docker cannot move the data out of the volume.
+      DATA_DIR: /data
+    volumes:
+      - bot-data:/data
+    restart: unless-stopped
+    # The bot closes its database and stops polling on SIGTERM within 15 seconds.
+    stop_grace_period: 20s
+    init: true
+
+volumes:
+  bot-data:

@@ -1,6 +1,13 @@
-import type Database from "better-sqlite3";
-import type { DocumentFacts, FullTextCheck, IntegrityStore } from "../../application/ports/integrity-store.js";
+import Database from "better-sqlite3";
+import type { DocumentFacts, FullTextCheck, FullTextContentCheck, IntegrityStore } from "../../application/ports/integrity-store.js";
 import { isContentHash } from "../../core/content-hash.js";
+import { LEXICAL_SELECT } from "./sqlite-vector-store.js";
+
+/** The content comparison works on an in-memory copy of the database; above this size it is skipped (and reported as skipped). */
+const MAX_CONTENT_CHECK_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_PROBE_LIMIT = 200;
+/** A distinctive word of a chunk: letters and digits only, so the full-text tokenizer sees exactly the same token. */
+const PROBE_WORD = /[\p{L}\p{N}]{4,}/u;
 
 const READABLE = "(c.embedding_dim > 0 AND length(c.embedding) = c.embedding_dim * 4)";
 
@@ -73,6 +80,66 @@ export class SqliteIntegrityStore implements IntegrityStore {
 
   async checkFullText() {
     return this.selectFullText.get() ?? { chunkRows: 0, indexedRows: 0, missing: 0, extra: 0 };
+  }
+
+  async checkFullTextContent(options: { probeLimit?: number } = {}): Promise<FullTextContentCheck> {
+    return { index: this.compareIndexWithContent(), probe: this.probeSearch(options.probeLimit ?? DEFAULT_PROBE_LIMIT) };
+  }
+
+  /**
+   * FTS5's `integrity-check` with rank = 1 recomputes the index entries of every row of the content table and compares them with the
+   * index: the full "does the index describe the text that is stored" question, answered without keeping a second copy of the text.
+   * The command is an INSERT, which a read-only connection refuses, so it runs on a private in-memory copy of the database.
+   */
+  private compareIndexWithContent(): FullTextContentCheck["index"] {
+    const bytes = (this.db.pragma("page_count", { simple: true }) as number) * (this.db.pragma("page_size", { simple: true }) as number);
+    if (bytes > MAX_CONTENT_CHECK_BYTES) {
+      return { status: "skipped", detail: `the database is larger than ${MAX_CONTENT_CHECK_BYTES / 1024 / 1024} MB, which is too large to copy into memory for this check` };
+    }
+
+    // The image of a WAL-mode database says "WAL" in its header (bytes 18-19), which an in-memory database cannot honour; the copy
+    // already contains everything the WAL held, so it is declared a plain rollback-journal image.
+    const image = this.db.serialize();
+    image[18] = 1;
+    image[19] = 1;
+    const copy = new Database(image);
+    try {
+      copy.prepare("INSERT INTO chunk_fts(chunk_fts, rank) VALUES ('integrity-check', 1)").run();
+      return { status: "ok" };
+    } catch (error) {
+      return { status: "mismatch", detail: error instanceof Error ? error.message : String(error) };
+    } finally {
+      copy.close();
+    }
+  }
+
+  /**
+   * A sample (evenly spread over the chunks, deterministic) is searched for through the very SQL of the bot's keyword search:
+   * the chunk must be found for its owner and must not be found for anybody else.
+   */
+  private probeSearch(limit: number): FullTextContentCheck["probe"] {
+    const total = this.db.prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM document_chunks").get()?.n ?? 0;
+    const result = { checked: 0, missing: 0, leaked: 0 };
+    if (total === 0 || limit <= 0) {
+      return result;
+    }
+
+    const step = Math.max(1, Math.ceil(total / limit));
+    const sample = this.db.prepare<[number, number], { id: string; userId: string; content: string }>(
+      "SELECT id, user_id AS userId, content FROM document_chunks WHERE (seq - 1) % ? = 0 ORDER BY seq LIMIT ?",
+    );
+    const search = this.db.prepare<{ match: string; userId: string; chunkId: string }, { id: string }>(`${LEXICAL_SELECT} AND c.id = @chunkId LIMIT 1`);
+
+    for (const chunk of sample.all(step, limit)) {
+      const word = PROBE_WORD.exec(chunk.content)?.[0];
+      if (!word) continue; // nothing searchable in it (the tokenizer would not index it either)
+      const match = `"${word}"`;
+
+      result.checked += 1;
+      if (search.all({ match, userId: chunk.userId, chunkId: chunk.id }).length === 0) result.missing += 1;
+      if (search.all({ match, userId: `not-${chunk.userId}`, chunkId: chunk.id }).length > 0) result.leaked += 1;
+    }
+    return result;
   }
 
   async rebuildFullText() {

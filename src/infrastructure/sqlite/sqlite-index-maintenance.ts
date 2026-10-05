@@ -28,7 +28,9 @@ export class SqliteIndexMaintenance implements IndexMaintenance {
               COUNT(c.seq) AS chunkCount,
               COALESCE(SUM(CASE WHEN ${STALE_CHUNK} THEN 1 ELSE 0 END), 0) AS staleChunkCount,
               COALESCE(SUM(CASE WHEN ${UNREADABLE_CHUNK} THEN 1 ELSE 0 END), 0) AS unreadableChunkCount,
-              MIN(c.embedding_model) AS vectorModel, MAX(c.embedding_dim) AS vectorDimension
+              MIN(c.embedding_model) AS vectorModel, MAX(c.embedding_dim) AS vectorDimension,
+              MAX(c.page_end) AS lastPage,
+              COALESCE(SUM(CASE WHEN c.section_path IS NOT NULL THEN 1 ELSE 0 END), 0) AS sectionedChunks
        FROM documents d
        LEFT JOIN document_chunks c ON c.document_id = d.id AND c.user_id = d.user_id
        WHERE (@userId IS NULL OR d.user_id = @userId)

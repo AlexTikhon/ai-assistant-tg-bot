@@ -68,6 +68,21 @@ export function formatDocumentList(overviews: DocumentOverview[]) {
     .join("\n\n");
 }
 
+/**
+ * What is known about where answers can point, from the stored chunks only (nothing is extracted for /doc). A PDF's page count is not
+ * stored, only the last page that has indexed text, and it is labelled as such rather than as "pages".
+ */
+function describeProvenance(type: string, { provenance, chunksCount }: DocumentOverview) {
+  if (chunksCount === 0) return [];
+  if (type === "PDF") {
+    return provenance.lastPage === null ? ["Page citations: not available (re-index it to add them)"] : [`Page citations: yes · last page with text: ${provenance.lastPage}`];
+  }
+  if (type === "MD") {
+    return [provenance.sectionedChunks > 0 ? "Section citations: yes" : "Section citations: no"];
+  }
+  return [];
+}
+
 /** `/doc <id>`: what a user may want to know about one document. No hashes, fingerprints or dimensions. */
 export function formatDocumentInfo(overview: DocumentOverview) {
   const { document } = overview;
@@ -85,7 +100,9 @@ export function formatDocumentInfo(overview: DocumentOverview) {
   if ((document.documentVersion ?? 1) > 1) {
     lines.push(`Version: ${document.documentVersion}`);
   }
-  lines.push(`Chunks: ${overview.chunksCount}`, `Status: ${describeHealth(overview.health)}`);
+  lines.push(`Chunks: ${overview.chunksCount}`);
+  lines.push(...describeProvenance(type, overview));
+  lines.push(`Status: ${describeHealth(overview.health)}`);
   return lines.join("\n");
 }
 

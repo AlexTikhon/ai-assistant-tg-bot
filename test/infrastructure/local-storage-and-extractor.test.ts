@@ -18,14 +18,14 @@ afterEach(() => {
 });
 
 describe("LocalFileStorage", () => {
-  it("saves under a sanitized, unique name and deletes by that name", async () => {
+  it("saves under a generated, unique name and deletes by that name", async () => {
     const storage = new LocalFileStorage(path.join(directory, "files"));
 
     const first = await storage.save("../../evil name!.PDF", Buffer.from("one"));
     const second = await storage.save("../../evil name!.PDF", Buffer.from("two"));
 
     expect(first).not.toBe(second);
-    expect(first).toMatch(/^[0-9a-f-]{36}-evil_name\.pdf$/);
+    expect(first).toMatch(/^[0-9a-f-]{36}\.pdf$/); // <uuid><extension>: nothing of the user's name is in it
     expect(fs.readdirSync(path.join(directory, "files")).sort()).toEqual([first, second].sort());
     expect(fs.readFileSync(path.join(directory, "files", first), "utf-8")).toBe("one");
 

@@ -4,11 +4,12 @@ import path from "node:path";
 import type { ActiveRecipe } from "../../application/assess-index.js";
 import { InspectIntegrityUseCase } from "../../application/use-cases/inspect-integrity.use-case.js";
 import type { IntegrityReport } from "../../application/use-cases/inspect-integrity.use-case.js";
+import { openDatabaseReadOnly } from "../sqlite/database.js";
 import { LATEST_SCHEMA_VERSION } from "../sqlite/migrations.js";
 import { SqliteIndexMaintenance } from "../sqlite/sqlite-index-maintenance.js";
 import { SqliteIntegrityStore } from "../sqlite/sqlite-integrity-store.js";
 import { LocalFileStorage } from "../storage/local-file-storage.js";
-import { BACKUP_FORMAT_VERSION, DATABASE_FILE, FILES_DIRECTORY, hashFile, MANIFEST_FILE, parseManifest } from "./manifest.js";
+import { APPLICATION_NAME, classifyBackupFormat, DATABASE_FILE, FILES_DIRECTORY, hashFile, MANIFEST_FILE, parseManifest } from "./manifest.js";
 import type { BackupManifest } from "./manifest.js";
 
 export type BackupVerification = {
@@ -61,8 +62,13 @@ export async function verifyBackup(directory: string, options: VerifyOptions): P
     problems.push(error instanceof Error ? error.message.replace(/^./, (c) => c.toUpperCase()) : String(error));
     return fail();
   }
-  if (manifest.formatVersion > BACKUP_FORMAT_VERSION) {
-    problems.push(`The backup format version ${manifest.formatVersion} is newer than this application understands (${BACKUP_FORMAT_VERSION}).`);
+  const format = classifyBackupFormat(manifest.formatVersion);
+  if (format.kind !== "supported") {
+    problems.push(format.message);
+    return fail(manifest);
+  }
+  if (manifest.application.name !== APPLICATION_NAME) {
+    problems.push(`This is a backup of "${manifest.application.name}", not of ${APPLICATION_NAME}.`);
     return fail(manifest);
   }
 
@@ -77,9 +83,13 @@ export async function verifyBackup(directory: string, options: VerifyOptions): P
       continue;
     }
     const target = path.join(filesPath, file.storedName);
-    const info = await fs.stat(target).catch(() => null);
+    const info = await fs.lstat(target).catch(() => null);
     if (!info) {
       problems.push(`File missing from the backup: ${file.storedName}`);
+      continue;
+    }
+    if (!info.isFile()) {
+      problems.push(`${file.storedName} in the backup is not a regular file (a link is never followed).`);
       continue;
     }
     checked.files += 1;
@@ -102,8 +112,8 @@ export async function verifyBackup(directory: string, options: VerifyOptions): P
   }
 
   // The database file.
-  const databaseInfo = await fs.stat(databasePath).catch(() => null);
-  if (!databaseInfo) {
+  const databaseInfo = await fs.lstat(databasePath).catch(() => null);
+  if (!databaseInfo || !databaseInfo.isFile()) {
     problems.push(`The database file ${DATABASE_FILE} is missing from the backup.`);
     return fail(manifest);
   }
@@ -114,7 +124,7 @@ export async function verifyBackup(directory: string, options: VerifyOptions): P
 
   let db: Database.Database;
   try {
-    db = new Database(databasePath, { readonly: true, fileMustExist: true });
+    db = openDatabaseReadOnly(databasePath, { requireCurrentSchema: false });
   } catch (error) {
     problems.push(`The database cannot be opened: ${error instanceof Error ? error.message : String(error)}`);
     return fail(manifest);
@@ -166,6 +176,7 @@ export async function verifyBackup(directory: string, options: VerifyOptions): P
         recipe: options.recipe,
         now: options.now,
         verifyHashes: false, // the file hashes were verified against the manifest above
+        deepFullText: true,
       }).execute();
 
       for (const issue of integrity.issues) {

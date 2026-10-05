@@ -161,11 +161,14 @@ export const limitsConfig = section(
     MAX_DOCUMENTS_PER_USER: positiveInt(100),
     MAX_STORAGE_BYTES_PER_USER: positiveInt(200 * 1024 * 1024),
     MAX_CHUNKS_PER_DOCUMENT: positiveInt(2000),
+    /** A PDF with more pages is refused before any text is extracted (a PDF of thousands of near-empty pages is small but slow to parse). */
+    MAX_PDF_PAGES: positiveInt(1000),
   }),
   (env) => ({
     maxDocumentsPerUser: env.MAX_DOCUMENTS_PER_USER,
     maxStorageBytesPerUser: env.MAX_STORAGE_BYTES_PER_USER,
     maxChunksPerDocument: env.MAX_CHUNKS_PER_DOCUMENT,
+    maxPdfPages: env.MAX_PDF_PAGES,
   }),
 );
 
@@ -189,6 +192,36 @@ export const diagnosticsConfig = section(
 );
 
 export type AppConfig = ReturnType<typeof loadConfig>;
+
+/** The part of the configuration the application core (everything but Telegram delivery and the OpenAI key) needs. */
+export type CoreConfig = Pick<AppConfig, "storage" | "ingestion" | "retrieval" | "limits" | "logQuestions" | "ragDebug">;
+
+/**
+ * The core's configuration without any secret: what `npm run smoke` and the end-to-end tests load. The bot token and the API key
+ * are not part of it, so a process that only needs the core runs without them.
+ */
+export function loadCoreConfig(source: EnvSource = process.env): CoreConfig {
+  const sections = {
+    base: baseConfig.tryLoad(source),
+    chunking: chunkingConfig.tryLoad(source),
+    upload: uploadConfig.tryLoad(source),
+    retrieval: retrievalConfig.tryLoad(source),
+    limits: limitsConfig.tryLoad(source),
+    diagnostics: diagnosticsConfig.tryLoad(source),
+  };
+  if (!sections.base.ok || !sections.chunking.ok || !sections.upload.ok || !sections.retrieval.ok || !sections.limits.ok || !sections.diagnostics.ok) {
+    throw configError([...new Set(Object.values(sections).flatMap((result) => (result.ok ? [] : result.issues)))]);
+  }
+
+  return {
+    storage: sections.base.value.storage,
+    ingestion: { ...sections.upload.value, ...sections.chunking.value },
+    retrieval: sections.retrieval.value,
+    limits: sections.limits.value,
+    logQuestions: sections.diagnostics.value.logQuestions,
+    ragDebug: sections.diagnostics.value.ragDebug,
+  };
+}
 
 /** What the maintenance and evaluation commands share: storage, models, chunking, retrieval, limits. No secrets. */
 export type ToolConfig = ReturnType<typeof loadToolConfig>;

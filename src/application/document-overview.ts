@@ -11,6 +11,8 @@ export type DocumentOverview = {
   document: DocumentRecord;
   chunksCount: number;
   health: IndexHealth;
+  /** What the stored chunks say about where their text came from. Read from the chunks: nothing is extracted to show it. */
+  provenance: { lastPage: number | null; sectionedChunks: number };
 };
 
 export type OverviewDependencies = {
@@ -48,9 +50,14 @@ export async function buildOverviews(
 
       if (!entry) {
         // Cannot happen for a document that was just read, except when it was deleted in between.
-        return { document, chunksCount: 0, health: { state: "unindexed", issues: ["unindexed"] } };
+        return { document, chunksCount: 0, health: { state: "unindexed", issues: ["unindexed"] }, provenance: { lastPage: null, sectionedChunks: 0 } };
       }
-      return { document, chunksCount: entry.chunkCount, health: healthOf(assessDocument(entry, deps.recipe), fileMissing) };
+      return {
+        document,
+        chunksCount: entry.chunkCount,
+        health: healthOf(assessDocument(entry, deps.recipe), fileMissing),
+        provenance: { lastPage: entry.lastPage ?? null, sectionedChunks: entry.sectionedChunks ?? 0 },
+      };
     }),
   );
 }

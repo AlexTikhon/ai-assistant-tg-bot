@@ -1,7 +1,9 @@
 import "dotenv/config";
+import "./quiet-logs.js";
 import { createIntegrityTool } from "../composition-root.js";
 import { loadToolConfig } from "../config/config.js";
 import { formatIntegrityReport, formatRepairResult, INTEGRITY_USAGE, parseIntegrityArgs } from "./integrity-cli.js";
+import { runCli } from "./run-cli.js";
 
 /**
  * `npm run integrity [-- --repair [--remove-orphans]] [--skip-hashes] [--json]`.
@@ -36,12 +38,4 @@ async function main() {
   }
 }
 
-main().then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exitCode = 1;
-  },
-);
+runCli(main);

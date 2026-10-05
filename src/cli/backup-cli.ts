@@ -15,7 +15,7 @@ Usage: npm run backup -- [--output <directory>]
   --help           show this help
 
 A backup never includes .env, API keys, the bot token or logs. Check one with: npm run backup:verify -- <directory>
-To restore, stop the bot, copy app.db and files/ into the data directory and start the bot (it migrates the schema).`;
+To restore one: stop the bot, then run: npm run restore -- --from <directory>  (add --dry-run to rehearse it, --replace-existing to replace an installation that holds data).`;
 
 export const VERIFY_USAGE = `Checks that a backup is complete and intact. It does not modify the backup or touch the live installation.
 

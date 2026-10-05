@@ -32,10 +32,46 @@ describe("document ownership and references", () => {
     expect(() => run("INSERT INTO documents (id, user_id, file_name, stored_name, file_size, text_length, created_at) VALUES ('n', 'u', 'a', NULL, 1, 1, 'now')")).toThrow(/NOT NULL/);
   });
 
-  it("a chunk's owner is NOT a database constraint (it would need a composite key and a table rebuild); code derives it from the document and `npm run integrity` reports a mismatch", () => {
-    run("UPDATE document_chunks SET user_id = 'someone-else' WHERE id = 'c1'");
+  it("a chunk's owner must be its document's owner: the database refuses a chunk recorded for someone else", () => {
+    // Both directions: re-owning an existing chunk, and inserting a chunk for a document of another user.
+    expect(() => run("UPDATE document_chunks SET user_id = 'someone-else' WHERE id = 'c1'")).toThrow(/FOREIGN KEY/);
+    expect(() =>
+      run("INSERT INTO document_chunks (id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at) VALUES ('x', 'd1', 'u2', 1, 't', x'0000803f', 'm', 1, 'now')"),
+    ).toThrow(/FOREIGN KEY/);
 
-    expect(all("SELECT user_id FROM document_chunks")).toEqual([{ user_id: "someone-else" }]);
+    expect(all("SELECT user_id FROM document_chunks")).toEqual([{ user_id: "u1" }]);
+  });
+
+  it("a document cannot change owner while it has chunks (the chunks would no longer match it)", () => {
+    expect(() => run("UPDATE documents SET user_id = 'u2' WHERE id = 'd1'")).toThrow(/FOREIGN KEY/);
+  });
+
+  it("the owner column is kept on chunks because the search filters by it without a join; the constraint is what keeps the copy honest", () => {
+    const plan = (all("EXPLAIN QUERY PLAN SELECT id, embedding FROM document_chunks WHERE user_id = 'u1' AND embedding_model = 'm'") as Array<{ detail: string }>).map((row) => row.detail).join(" ");
+
+    expect(plan).toContain("idx_chunks_user_model");
+    expect(plan).not.toMatch(/documents/);
+  });
+
+  it("the integrity scan still reports a mismatch that got in anyway (a database written with foreign keys off)", () => {
+    stores.db.pragma("foreign_keys = OFF");
+    run("UPDATE document_chunks SET user_id = 'someone-else' WHERE id = 'c1'");
+    stores.db.pragma("foreign_keys = ON");
+
+    expect(all("PRAGMA foreign_key_check")).toEqual([expect.objectContaining({ table: "document_chunks", parent: "documents" })]);
+  });
+});
+
+describe("chunk range checks", () => {
+  it("rejects a negative chunk position and a negative vector dimension", () => {
+    expect(() => run("INSERT INTO document_chunks (id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at) VALUES ('n1', 'd1', 'u1', -1, 't', x'0000803f', 'm', 1, 'now')")).toThrow(/CHECK/);
+    expect(() => run("INSERT INTO document_chunks (id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at) VALUES ('n2', 'd1', 'u1', 7, 't', x'0000803f', 'm', -1, 'now')")).toThrow(/CHECK/);
+  });
+
+  it("still accepts dimension 0: that is how an unreadable vector is flagged, and the text stays searchable", () => {
+    run("INSERT INTO document_chunks (id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at) VALUES ('z', 'd1', 'u1', 9, 'zero', x'', 'm', 0, 'now')");
+
+    expect(all("SELECT COUNT(*) AS n FROM chunk_fts WHERE chunk_fts MATCH 'zero'")).toEqual([{ n: 1 }]);
   });
 });
 

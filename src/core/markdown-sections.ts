@@ -32,6 +32,14 @@ function frontMatterLength(lines: string[]): number {
 }
 
 /**
+ * Section labels are computed by comparing every chunk with the heading list, so the cost grows with chunks x headings. A real document
+ * has dozens or hundreds of headings; a file made of nothing but headings (measured: 480,000 headings in 2 MB) took about 23 seconds of
+ * uninterrupted CPU and froze the whole bot. Beyond this many headings no section labels are produced at all (never a partial,
+ * misleading set): the document is indexed normally and cited by chunk number, as before sections existed.
+ */
+export const MAX_SECTION_HEADINGS = 5000;
+
+/**
  * The headings of a Markdown text, in order. A deliberately small parser - not a Markdown implementation:
  * ATX headings ("#"), and Setext headings (a paragraph underlined with "===" for level 1 or "---" for level
  * 2), always outside fenced code blocks, so a "# comment" or a "=====" in a code sample is not mistaken for a

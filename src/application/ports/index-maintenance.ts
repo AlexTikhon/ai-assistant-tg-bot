@@ -15,6 +15,10 @@ export type IndexedDocument = {
   staleChunkCount: number;
   /** Chunks whose vector cannot be decoded at all (a subset of the stale ones): corruption, not "another model". */
   unreadableChunkCount: number;
+  /** The last page any chunk ends on (PDF only); null when no chunk has page information. Not the page count: trailing pages without text are not known. */
+  lastPage?: number | null;
+  /** How many chunks carry a Markdown section path. */
+  sectionedChunks?: number;
   /**
    * How the document was indexed. The embedding fields always describe the vectors that search really
    * uses (read from the chunks). For documents indexed before recipes were recorded, chunk size and

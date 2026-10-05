@@ -160,8 +160,9 @@ describe("integrity check: chunks and index", () => {
 
   it("detects chunks that belong to another user than their document, and chunks of vanished documents", async () => {
     const id = await ingest("a.txt");
-    stores.db.prepare("UPDATE document_chunks SET user_id = 'someone-else' WHERE document_id = ? AND chunk_index = 0").run(id);
+    // The schema refuses these rows (composite foreign key); a database written with foreign keys off, or damaged, can still contain them.
     stores.db.pragma("foreign_keys = OFF");
+    stores.db.prepare("UPDATE document_chunks SET user_id = 'someone-else' WHERE document_id = ? AND chunk_index = 0").run(id);
     stores.db.prepare("DELETE FROM documents WHERE id = ?").run(await ingest("b.txt"));
 
     const codesFound = codes(await inspector().execute());

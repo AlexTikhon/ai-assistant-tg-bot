@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { hashContent } from "../../core/content-hash.js";
 import { isSupportedFileName } from "../../core/document.js";
+import { normalizeDisplayFileName } from "../../core/file-validation.js";
 import type { DocumentRecord } from "../../core/document.js";
 import type { IndexHealth } from "../../core/index-health.js";
 import { ValidationError } from "../../shared/errors.js";
@@ -101,8 +102,10 @@ export class IngestDocumentUseCase {
   private async ingest(input: IngestDocumentInput): Promise<IngestDocumentResult> {
     const startedAt = Date.now();
     const { documents, files, extractor, embeddings, options } = this.deps;
+    // The name is metadata: cleaned of control and direction characters and bounded, never used as a path (the stored file gets a generated name).
+    const fileName = normalizeDisplayFileName(input.fileName);
 
-    if (!isSupportedFileName(input.fileName)) {
+    if (!isSupportedFileName(fileName)) {
       throw new ValidationError("Unsupported file type. Send PDF, MD, or TXT.");
     }
     if (input.data.byteLength === 0) {
@@ -138,16 +141,16 @@ export class IngestDocumentUseCase {
 
     await this.assertWithinQuota(input.userId, input.data.byteLength);
 
-    const prepared = await prepareIndex({ extractor, embeddings }, input, options);
+    const prepared = await prepareIndex({ extractor, embeddings }, { ...input, fileName }, options);
 
     const documentId = (this.deps.newId ?? randomUUID)();
     const createdAt = new Date().toISOString();
-    const storedName = await files.save(input.fileName, input.data);
+    const storedName = await files.save(fileName, input.data);
 
     const document: DocumentRecord = {
       id: documentId,
       userId: input.userId,
-      fileName: input.fileName,
+      fileName,
       storedName,
       mimeType: input.mimeType,
       fileSize: input.data.byteLength,
@@ -181,7 +184,7 @@ export class IngestDocumentUseCase {
       "Document ingested",
     );
 
-    return { kind: "created", documentId, fileName: input.fileName, chunksCount: chunks.length, textLength: prepared.textLength };
+    return { kind: "created", documentId, fileName, chunksCount: chunks.length, textLength: prepared.textLength };
   }
 
   private async assertWithinQuota(userId: string, incomingBytes: number) {

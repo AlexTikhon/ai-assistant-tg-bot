@@ -31,6 +31,7 @@ describe("loadConfig", () => {
       maxDocumentsPerUser: 100,
       maxStorageBytesPerUser: 200 * 1024 * 1024,
       maxChunksPerDocument: 2000,
+      maxPdfPages: 1000,
     });
     expect(config.rateLimit).toEqual({ requests: 10, windowMs: 60_000 });
     expect(config.logQuestions).toBe(false);
@@ -60,7 +61,7 @@ describe("loadConfig", () => {
     });
 
     expect(config.retrieval).toMatchObject({ semanticLimit: 30, lexicalLimit: 15, contextMaxChars: 4000 });
-    expect(config.limits).toEqual({ maxDocumentsPerUser: 7, maxStorageBytesPerUser: 1_000_000, maxChunksPerDocument: 50 });
+    expect(config.limits).toEqual({ maxDocumentsPerUser: 7, maxStorageBytesPerUser: 1_000_000, maxChunksPerDocument: 50, maxPdfPages: 1000 });
     expect(config.rateLimit).toEqual({ requests: 3, windowMs: 1000 });
     expect(config.ragDebug).toBe(true);
   });

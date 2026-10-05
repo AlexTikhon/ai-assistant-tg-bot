@@ -1,0 +1,159 @@
+# Deterministic checks only: no secrets, no OpenAI, no Telegram, no paid evaluation.
+# Everything below runs against a real SQLite (better-sqlite3, installed the normal way by `npm ci`) - nothing is mocked.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two Node versions the project supports (package.json "engines"). The suite takes seconds, so both run it in full.
+        node: [24, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install (from the lockfile)
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit, integration and end-to-end tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test of the compiled application (real SQLite, FTS5, retrieval, backup, restore; offline providers)
+        run: npm run smoke
+
+      - name: Operational commands from compiled code, without credentials
+        run: npm run smoke:cli
+
+      - name: Retrieval regression baseline
+        run: npm run test:retrieval
+
+      - name: Offline retrieval evaluation
+        run: npm run eval:retrieval
+
+      - name: Offline confidence-gate calibration report
+        run: npm run eval:confidence
+
+  coverage:
+    name: Coverage (diagnostic, no threshold)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Tests with coverage
+        run: npm run test:coverage
+      - name: Summary
+        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+          retention-days: 14
+
+  package:
+    name: Build artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Assemble the runtime bundle (compiled code, manifests, docs - no .env, data, backups or coverage)
+        run: |
+          mkdir bundle
+          cp -r dist package.json package-lock.json README.md docs bundle/
+          tar -czf telegram-rag-bot-bundle.tgz -C bundle .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-bundle
+          path: telegram-rag-bot-bundle.tgz
+          retention-days: 14
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t telegram-rag-bot:ci .
+
+      - name: Runs as an unprivileged user
+        run: |
+          uid="$(docker run --rm telegram-rag-bot:ci id -u)"
+          echo "uid=$uid"
+          test "$uid" != "0"
+
+      - name: The data volume is writable by that user, and the image holds no secrets or user data
+        run: |
+          docker run --rm -v ci-data:/data telegram-rag-bot:ci sh -c 'touch /data/probe && test -w /data'
+          docker run --rm --entrypoint sh telegram-rag-bot:ci -c 'test ! -e /app/.env && test ! -e /app/data && test ! -e /app/src'
+
+      - name: Smoke test inside the container (no credentials)
+        run: docker run --rm telegram-rag-bot:ci node dist/cli/smoke.js
+
+      - name: Operational commands inside the container (no credentials)
+        run: docker run --rm telegram-rag-bot:ci node dist/cli/smoke-cli.js
+
+      - name: Without configuration the container stops with a clear message instead of hanging
+        run: |
+          set +e
+          out="$(docker run --rm telegram-rag-bot:ci 2>&1)"
+          code=$?
+          echo "$out"
+          test "$code" -ne 0
+          echo "$out" | grep -q "Invalid configuration"
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Runtime dependencies - any known vulnerability fails the build
+        run: npm audit --omit=dev
+      - name: All dependencies - reported, never failing (see docs/operations.md, "Dependency audit policy")
+        continue-on-error: true
+        run: npm audit

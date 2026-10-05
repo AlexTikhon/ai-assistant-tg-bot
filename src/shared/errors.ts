@@ -34,6 +34,8 @@ export class StartupError extends Error {
   constructor(
     readonly stage: "database" | "storage",
     cause: unknown,
+    /** What the operator can do about it (e.g. verify a backup and restore it). Never contains data. */
+    readonly advice?: string,
   ) {
     super(`Startup failed at the ${stage} stage: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
     this.name = "StartupError";

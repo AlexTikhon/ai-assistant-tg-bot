@@ -3,7 +3,7 @@ import type { ChunkRecord } from "../core/document.js";
 import { buildIndexProfile } from "../core/index-profile.js";
 import type { IndexProfile } from "../core/index-profile.js";
 import { getFileExtension } from "../shared/utils/path.js";
-import { parseMarkdownHeadings, sectionPathForRange } from "../core/markdown-sections.js";
+import { MAX_SECTION_HEADINGS, parseMarkdownHeadings, sectionPathForRange } from "../core/markdown-sections.js";
 import { buildDocumentText, pageRangeForSpan } from "../core/pages.js";
 import type { SourceProvenance } from "../core/provenance.js";
 import { splitTextWithOffsets } from "../core/text-splitter.js";
@@ -59,7 +59,9 @@ export async function prepareIndex(
   }
 
   // Markdown only (by extension): the headings of the normalized text, whose offsets are those of the splitter.
-  const headings = getFileExtension(input.fileName) === ".md" ? parseMarkdownHeadings(text) : [];
+  // Past the bound the section labels are left out (the document is still indexed and cited by chunk number): see MAX_SECTION_HEADINGS.
+  const parsedHeadings = getFileExtension(input.fileName) === ".md" ? parseMarkdownHeadings(text) : [];
+  const headings = parsedHeadings.length <= MAX_SECTION_HEADINGS ? parsedHeadings : [];
 
   const vectors = await embeddings.embedDocuments(drafts.map((draft) => draft.content));
   ensureEmbeddingBatch(vectors, drafts.length);

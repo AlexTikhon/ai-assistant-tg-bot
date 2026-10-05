@@ -15,6 +15,7 @@ const overview = (overrides: Partial<DocumentOverview["document"]> = {}, facts: 
   document: makeDocument({ id: "doc-1", fileName: "notes.pdf", fileSize: 2048, createdAt: "2026-03-01T10:00:00.000Z", documentVersion: 1, contentHash: "a".repeat(64), ...overrides }),
   chunksCount: 4,
   health: deriveIndexHealth({ ...healthy, ...facts }),
+  provenance: { lastPage: 12, sectionedChunks: 0 },
 });
 
 describe("/list", () => {
@@ -60,6 +61,27 @@ describe("/doc", () => {
     expect(text).toContain("Version: 2");
     expect(text).toContain("Status: ready");
     expect(text).not.toMatch(/[0-9a-f]{64}|fingerprint|dimension|profile/i);
+  });
+
+  it("a PDF says whether page citations exist and how far the indexed text reaches - never claiming a page count it does not know", () => {
+    const text = formatDocumentInfo({ ...overview(), provenance: { lastPage: 42, sectionedChunks: 0 } });
+
+    expect(text).toContain("Page citations: yes · last page with text: 42");
+    expect(text).not.toMatch(/\bPages?: \d/);
+  });
+
+  it("a PDF indexed before page numbers were recorded says so instead of showing a page", () => {
+    expect(formatDocumentInfo({ ...overview(), provenance: { lastPage: null, sectionedChunks: 0 } })).toContain("Page citations: not available");
+  });
+
+  it("a Markdown file says whether its answers can cite sections", () => {
+    expect(formatDocumentInfo({ ...overview({ fileName: "guide.md" }), provenance: { lastPage: null, sectionedChunks: 3 } })).toContain("Section citations: yes");
+    expect(formatDocumentInfo({ ...overview({ fileName: "guide.md" }), provenance: { lastPage: null, sectionedChunks: 0 } })).toContain("Section citations: no");
+  });
+
+  it("a text file and an unindexed document have no provenance line", () => {
+    expect(formatDocumentInfo(overview({ fileName: "plain.txt" }))).not.toMatch(/citations/);
+    expect(formatDocumentInfo({ ...overview(), chunksCount: 0 })).not.toMatch(/citations/);
   });
 });
 

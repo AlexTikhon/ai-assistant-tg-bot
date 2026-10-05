@@ -1,5 +1,6 @@
 import { hashContent } from "../../core/content-hash.js";
 import { isSupportedFileName } from "../../core/document.js";
+import { normalizeDisplayFileName } from "../../core/file-validation.js";
 import { NotFoundError, ValidationError } from "../../shared/errors.js";
 import { KeyedMutex } from "../../shared/keyed-mutex.js";
 import { logger } from "../../shared/logger.js";
@@ -83,8 +84,9 @@ export class ReplaceDocumentUseCase {
   private async replace(input: ReplaceDocumentInput): Promise<ReplaceDocumentResult> {
     const startedAt = Date.now();
     const { documents, files, extractor, embeddings, options } = this.deps;
+    const fileName = normalizeDisplayFileName(input.fileName); // metadata only; see IngestDocumentUseCase
 
-    if (!isSupportedFileName(input.fileName)) {
+    if (!isSupportedFileName(fileName)) {
       throw new ValidationError("Unsupported file type. Send PDF, MD, or TXT.");
     }
     if (input.data.byteLength === 0) {
@@ -133,15 +135,15 @@ export class ReplaceDocumentUseCase {
     }
 
     // Prepare: the only paid and failure-prone steps. Nothing has been changed yet.
-    const prepared = await prepareIndex({ extractor, embeddings }, input, options);
+    const prepared = await prepareIndex({ extractor, embeddings }, { ...input, fileName }, options);
 
     const updatedAt = new Date().toISOString();
-    const storedName = await files.save(input.fileName, input.data);
+    const storedName = await files.save(fileName, input.data);
 
     let swap;
     try {
       swap = await documents.replaceDocument(input.userId, input.documentId, {
-        fileName: input.fileName,
+        fileName,
         storedName,
         mimeType: input.mimeType,
         fileSize: input.data.byteLength,
@@ -182,7 +184,7 @@ export class ReplaceDocumentUseCase {
     return {
       kind: "replaced",
       documentId: input.documentId,
-      fileName: input.fileName,
+      fileName,
       chunksCount: prepared.chunks.length,
       textLength: prepared.textLength,
       documentVersion: swap.documentVersion,

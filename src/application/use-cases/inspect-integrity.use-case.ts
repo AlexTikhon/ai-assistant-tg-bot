@@ -8,6 +8,7 @@ import { assessDocument } from "../assess-index.js";
 import type { ActiveRecipe, DocumentAssessment } from "../assess-index.js";
 import type { FileStorage } from "../ports/file-storage.js";
 import type { IndexMaintenance } from "../ports/index-maintenance.js";
+import type { RestoreArtifacts } from "../ports/restore-artifacts.js";
 import type { DocumentFacts, IntegrityStore } from "../ports/integrity-store.js";
 
 export type IntegrityCode =
@@ -20,6 +21,8 @@ export type IntegrityCode =
   | "duplicate-content"
   | "orphan-file"
   | "temporary-file"
+  | "interrupted-restore"
+  | "previous-installation"
   | "no-chunks"
   | "unreadable-embedding"
   | "mixed-dimensions"
@@ -27,6 +30,9 @@ export type IntegrityCode =
   | "foreign-chunk"
   | "orphan-chunks"
   | "fts-mismatch"
+  | "fts-content-mismatch"
+  | "fts-search-broken"
+  | "fts-check-skipped"
   | "stale-index";
 
 export type IntegrityIssue = {
@@ -72,6 +78,13 @@ type Dependencies = {
   now: () => number;
   /** Read every stored file to verify its content hash (slow for large collections). */
   verifyHashes: boolean;
+  /**
+   * Also compare the full-text index with the chunk text and search for a sample of chunks. Reads the whole database once,
+   * so only the explicit commands enable it (`npm run integrity`, backup verification, restore) - never the startup check.
+   */
+  deepFullText?: boolean;
+  /** The working directories `npm run restore` leaves in the data directory; absent where there is no data directory to look in. */
+  restoreArtifacts?: RestoreArtifacts;
   limits?: StorageAgeLimits;
 };
 
@@ -138,6 +151,10 @@ export class InspectIntegrityUseCase {
       });
     }
 
+    if (this.deps.deepFullText) {
+      issues.push(...(await this.inspectFullTextContent(fullText.missing + fullText.extra > 0)));
+    }
+
     for (const { entry, removable } of layout.orphans) {
       issues.push({
         code: "orphan-file",
@@ -160,7 +177,73 @@ export class InspectIntegrityUseCase {
       });
     }
 
+    issues.push(...(await this.inspectRestoreArtifacts()));
+
     return { issues, summary: summarize(documents, assessments, issues) };
+  }
+
+  /** What a restore left behind: the staging area of an interrupted one, and the installation a finished one replaced. */
+  private async inspectRestoreArtifacts(): Promise<IntegrityIssue[]> {
+    if (!this.deps.restoreArtifacts) return [];
+    const limits = this.deps.limits ?? DEFAULT_STORAGE_AGE_LIMITS;
+    const issues: IntegrityIssue[] = [];
+
+    for (const artifact of await this.deps.restoreArtifacts.list()) {
+      const ageMs = Math.max(0, this.deps.now() - artifact.modifiedAtMs);
+      if (artifact.kind === "staging") {
+        const stale = ageMs >= limits.temporaryMs;
+        issues.push({
+          code: "interrupted-restore",
+          severity: "warning",
+          file: artifact.name,
+          removable: stale,
+          repairable: stale,
+          message: `${artifact.name} is the working directory of a restore${stale ? " that was interrupted" : " (recent: a restore may still be running)"}. The live installation was not changed by it.`,
+          remedy: stale ? REPAIR : undefined,
+        });
+      } else {
+        issues.push({
+          code: "previous-installation",
+          severity: "warning",
+          file: artifact.name,
+          message: `${artifact.name} is the installation a restore replaced (its database and files), kept so that the restore can be undone. It holds user documents.`,
+          remedy: "Delete the directory yourself once the restored data has been checked; this is never done automatically.",
+        });
+      }
+    }
+    return issues;
+  }
+
+  /**
+   * The content-level full-text check. When the cheap row-count check already reported a mismatch, the content comparison would
+   * only repeat it in a noisier form, so it is not reported twice.
+   */
+  private async inspectFullTextContent(alreadyReported: boolean): Promise<IntegrityIssue[]> {
+    const check = await this.deps.store.checkFullTextContent();
+    const issues: IntegrityIssue[] = [];
+
+    if (check.index.status === "mismatch" && !alreadyReported) {
+      issues.push({
+        code: "fts-content-mismatch",
+        severity: "error",
+        message: `The full-text index does not describe the stored chunk text (${check.index.detail ?? "checksum mismatch"}). Keyword search can miss chunks or return stale ones until it is rebuilt.`,
+        remedy: REPAIR,
+        repairable: true,
+      });
+    }
+    if (check.index.status === "skipped") {
+      issues.push({ code: "fts-check-skipped", severity: "warning", message: `The content-level full-text check was skipped: ${check.index.detail ?? "not possible"}.` });
+    }
+    if (check.probe.missing > 0 || check.probe.leaked > 0) {
+      issues.push({
+        code: "fts-search-broken",
+        severity: "error",
+        message: `Keyword search returned wrong results for a sample of ${check.probe.checked} chunks: ${check.probe.missing} were not found by their owner, ${check.probe.leaked} were found for another user.`,
+        remedy: check.probe.leaked > 0 ? "Not repaired automatically: a search that crosses users is a defect, not stale data." : REPAIR,
+        repairable: check.probe.leaked === 0,
+      });
+    }
+    return issues;
   }
 
   /** File presence, size and (optionally) the bytes of one document's original. */

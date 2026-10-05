@@ -28,7 +28,7 @@ function setup(overrides: { readConfig?: () => unknown; createApplication?: () =
   };
   const app = {
     bot,
-    readiness: { schemaVersion: 8, dataDir: "/data" },
+    readiness: { schemaVersion: 8, dataDir: "/data", version: "1.2.3", confidenceMode: "shadow" },
     startupCheck: vi.fn(async () => {
       events.push("startupCheck");
     }),
@@ -52,8 +52,8 @@ describe("startBot: readiness stages", () => {
     const result = await startBot(deps);
 
     expect(result.exitCode).toBe(0); // (the startup check logs its own summary line)
-    expect(entries.filter((entry) => entry.fields.stage).map((entry) => entry.fields.stage)).toEqual(["config", "database", "storage", "telegram", "ready"]);
-    expect(entries.find((entry) => entry.fields.stage === "database")?.fields).toMatchObject({ schemaVersion: 8 });
+    expect(entries.filter((entry) => entry.fields.stage).map((entry) => entry.fields.stage)).toEqual(["config", "database", "storage", "retrieval", "telegram", "ready"]);
+    expect(entries.find((entry) => entry.fields.stage === "database")?.fields).toMatchObject({ schemaVersion: 8, version: "1.2.3" });
     expect(events).toEqual(["startupCheck"]);
   });
 

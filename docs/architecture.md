@@ -3,37 +3,60 @@
 Dependencies point inwards: the application layer only knows ports (interfaces), never SQLite, OpenAI, the filesystem or Telegram. `src/composition-root.ts` is the single place where concrete adapters are created and injected. `test/architecture.test.ts` enforces the import rules (and that the bot's runtime never imports evaluation code).
 
 ```mermaid
+flowchart TB
+  TG([Telegram]) --> AD["telegram/ adapter<br/>handlers, middleware, rate limit"]
+  AD --> UC["Application use cases<br/>ingest, replace, answer, list, doc, delete, summarize"]
+  UC --> RP["Retrieval policy<br/>confidence gate (off / shadow / enforce), context selection"]
+  RP --> HR["Hybrid retriever<br/>reciprocal rank fusion + exact tokens"]
+  HR --> VEC["Vector search<br/>cosine over stored embeddings"]
+  HR --> FTS["Keyword search<br/>SQLite FTS5"]
+  UC --> LC["Document lifecycle<br/>hash identity, atomic replace, index health"]
+  VEC --> DB[("SQLite<br/>WAL, constraints")]
+  FTS --> DB
+  LC --> DB
+  LC --> FILES[("File storage<br/>server-named originals")]
+  UC -. "embeddings, chat, speech-to-text" .-> OAI([OpenAI])
+  OPS["Operational commands<br/>backup, verify, restore, integrity, reindex,<br/>diagnostics, db:maintenance, smoke"] --> DB
+  OPS --> FILES
+  CR["composition-root.ts"] -. wires .-> AD
+  CR -. wires .-> UC
+```
+
+The layers below are what the diagram's boxes are made of; dependencies point inwards and `test/architecture.test.ts` enforces it.
+
+```mermaid
 flowchart LR
   subgraph telegram [telegram/ - delivery]
     H[handlers + middleware]
   end
   subgraph application [application/]
-    UC[use cases + HybridRetriever]
+    UC2[use cases + HybridRetriever]
     P{{ports}}
   end
   subgraph core [core/ - pure logic]
-    C[types, splitter, pages, provenance, markdown sections, index profile, vector math, rank fusion, exact tokens, retrieval confidence, context selection, citations]
+    C[types, splitter, pages, provenance, markdown sections, index profile, vector math, rank fusion, exact tokens, retrieval confidence, context selection, citations, file validation]
   end
   subgraph infra [infrastructure/ - adapters]
     SQ[(SQLite: repository, vector store, FTS5)]
     FS[local file storage]
+    BK[backup / verify / restore]
     OA[OpenAI chat / embeddings / speech-to-text]
     PDF[PDF / text extractor]
   end
   subgraph tooling [eval/ + cli/ - tooling, never loaded by the bot]
-    EV[evaluation, calibration, benchmark, reindex CLI]
+    EV[evaluation, calibration, benchmark, operational commands, smoke]
   end
-  H --> UC
-  UC --> P
-  UC --> C
+  H --> UC2
+  UC2 --> P
+  UC2 --> C
   SQ -. implements .-> P
   FS -. implements .-> P
   OA -. implements .-> P
   PDF -. implements .-> P
-  CR[composition-root.ts] --> H
-  CR --> UC
-  CR --> infra
-  EV --> UC
+  CR2[composition-root.ts] --> H
+  CR2 --> UC2
+  CR2 --> infra
+  EV --> UC2
   EV --> infra
 ```
 
@@ -41,9 +64,11 @@ flowchart LR
 src/
   index.ts              entry point of the bot (a few lines: startBot with the real dependencies)
   startup.ts            the logged start stages (config, database, storage, Telegram) and what happens when one fails
-  composition-root.ts   creates adapters once and injects them (bot + the reindex, integrity tools)
+  composition-root.ts   creates adapters once and injects them: createCore (everything but Telegram; providers injectable - used by
+                        the smoke command and the end-to-end tests), createApplication (bot), the reindex and integrity tools
   lifecycle.ts          start polling, graceful shutdown (SIGINT/SIGTERM)
-  cli/                  command-line tools: reindex, integrity, backup, backup-verify, eval-retrieval (also eval:confidence), eval-diff, bench-retrieval
+  cli/                  command-line tools, compiled and run from dist: reindex, integrity, backup, backup-verify, restore, diagnostics,
+                        db-maintenance, smoke, smoke-cli; development tooling (tsx): eval-retrieval (also eval:confidence), eval-diff, bench-retrieval
   config/               environment parsing in independent sections (zod); each command loads only what it needs
   core/                 pure logic, no I/O: types, text splitter (with offsets), page + Markdown-section provenance,
                         index profile, cosine similarity + vector codec, rank fusion (RRF) + exact-token bonus,
@@ -65,19 +90,20 @@ src/
     document-overview.ts         health of a user's documents for /list and /doc
     check-index-compatibility.ts, startup-check.ts   the cheap startup diagnostics
   infrastructure/
-    sqlite/             connection (+ read-only open), migrations, repository, vector store (vectors + FTS5), index maintenance,
-                        integrity store, feedback store
+    sqlite/             connection settings (+ read-only / maintenance opens, corruption classification), migrations, repository,
+                        vector store (vectors + FTS5), index maintenance, integrity store (+ deep full-text check), feedback store, maintenance
     storage/            local file storage (atomic writes, temporary files)
-    backup/             manifest, create-backup (SQLite online backup), verify-backup
+    backup/             manifest (+ format versioning), create-backup (SQLite online backup), verify-backup, restore-backup, restore leftovers
+    diagnostics/        the safe operator summary
     memory/             the bounded in-memory journal of answer outcomes
     openai/             chat model, embeddings, speech-to-text adapters
     documents/          PDF (per page) / MD / TXT text extraction
   eval/                 evaluation: metrics, answerability, calibration, dataset, harness, runner, comparison,
                         baseline, report, export, diff, live-run plan, benchmark
   telegram/             bot factory, routing, handlers, middleware (errors, rate limit), downloads, UI text
-  shared/               logger (+ request ids), errors, rate limiter, keyed mutex, bounded retry, small utilities
+  shared/               logger (+ request ids), the secret scrubber, errors, rate limiter, keyed mutex, bounded retry, version, permissions, small utilities
 eval/                   fixture corpus, questions (JSONL, versioned), comparison grids, baseline minimums, offline embedding lexicon
-docs/                   this file, rag.md, evaluation.md
+docs/                   this file, rag.md, evaluation.md, operations.md (run, Docker, backup/restore, scenarios), security.md (threat model, logging rule)
 test/                   Vitest suites using fakes for the ports and in-memory SQLite
 ```
 
@@ -158,7 +184,7 @@ SQLite cannot roll back a file write, so every workflow that crosses both uses o
 | restore a lost original (duplicate upload) | find the document by hash, `stat` the file | write the file, then update `stored_name` | - | delete the file just written; the upload is still reported as a duplicate | - |
 | repair | inspect | only deterministic, free steps | - | reported as failed, the others still run | - |
 
-A crash between "write file" and "commit" can only leave an *unreferenced* file, never a row without its file; `save` writes `.tmp-<uuid>-<name>.part` and renames it, so even a crash mid-write leaves a recognisable temporary file instead of a truncated document. Failed work is never visible to users: the previous document and index stay usable until the new ones fully exist. Compensation failures are logged and never replace the original error.
+A crash between "write file" and "commit" can only leave an *unreferenced* file, never a row without its file; `save` writes `.tmp-<uuid>.part` and renames it to `<uuid><ext>`, so even a crash mid-write leaves a recognisable temporary file instead of a truncated document. Failed work is never visible to users: the previous document and index stay usable until the new ones fully exist. Compensation failures are logged and never replace the original error.
 
 ## Index health
 
@@ -180,7 +206,7 @@ Answering never repairs anything: it makes one query-embedding call and no write
 
 `npm run integrity` is a **read-only** deep check: the database is opened with SQLite's read-only flag and is not migrated (an older schema is refused with a hint), so even a bug cannot write. It reports, per problem, what is wrong and the command that fixes it:
 
-`missing-file`, `unreadable-file`, `file-size-mismatch`, `content-hash-mismatch` (reads every file; `--skip-hashes` for speed), `unknown-content-hash`, `duplicate-content`, `orphan-file`, `temporary-file`, `no-chunks`, `unreadable-embedding`, `mixed-dimensions`, `chunk-index-gap`, `foreign-chunk`, `orphan-chunks`, `fts-mismatch`, `database-corrupt` (SQLite's own checks) and `stale-index` - with a summary of how many documents need `npm run reindex` (re-embed) versus `npm run reindex -- --rechunk`. A Markdown document that predates section-aware extraction is named as such. The exit code is 1 when errors remain.
+`missing-file`, `unreadable-file`, `file-size-mismatch`, `content-hash-mismatch` (reads every file; `--skip-hashes` for speed), `unknown-content-hash`, `duplicate-content`, `orphan-file`, `temporary-file`, `no-chunks`, `unreadable-embedding`, `mixed-dimensions`, `chunk-index-gap`, `foreign-chunk`, `orphan-chunks`, `fts-mismatch`, `fts-content-mismatch` and `fts-search-broken` (the deep full-text check), `interrupted-restore`, `previous-installation`, `database-corrupt` (SQLite's own checks) and `stale-index` - with a summary of how many documents need `npm run reindex` (re-embed) versus `npm run reindex -- --rechunk`. A Markdown document that predates section-aware extraction is named as such. The exit code is 1 when errors remain.
 
 `npm run integrity -- --repair` applies only deterministic repairs that lose nothing and cost nothing, and prints exactly what it changed: rebuild the full-text index, record a missing content hash from the present original, delete **stale** temporary files (older than one hour, so a running upload is safe). `--remove-orphans` (with `--repair`) additionally deletes unreferenced stored files older than 24 hours. It never deletes documents or chunks, never regenerates embeddings, never replaces files, never guesses ownership and has no embeddings provider (an architecture test checks that the integrity, repair and backup code imports none).
 
@@ -199,11 +225,11 @@ A backup is a directory: `app.db`, `files/<stored name>` (every original the sna
 
 `backup:verify` is read-only: manifest valid, database and every file match the recorded size and SHA-256, the database opens read-only and passes SQLite's structural check, every document's file is present (or recorded as already missing), recorded content hashes agree with the files, and the checks of `npm run integrity` run on the copy. Exit code 1 on any problem.
 
-**Restore** is deliberately manual (no destructive command): stop the bot, copy `app.db` and `files/` into a *new, empty* data directory, run `npm run integrity` against it (`DATA_DIR=...`), then start the bot, which migrates an older schema.
+**Restore** (`npm run restore -- --from <backup>`) is verify -> stage -> migrate the candidate -> integrity-check the candidate -> activate, and never replaces an installation that holds data without `--replace-existing` (the replaced one is kept). The database file is the single, atomic commit point; every failure before it leaves the live installation untouched. Format versions, atomicity and failure semantics: [operations.md](operations.md#backup-and-restore).
 
 ## Startup
 
-`startBot` logs the stages separately and stops at the first failure with a non-zero exit code: **config** (invalid configuration: nothing is created), **database** (open + migrate; a failed migration never reaches polling), **storage** (the data directory must be readable and writable), the cheap **startup check**, then **telegram** (command menu sync + polling start; on failure the database is closed). Nothing logs the configuration, the token or the key. The startup check logs counts only - documents, outdated indexes, missing originals, stale temporary files, orphan files - and points to `npm run integrity` for details; it never reads file contents, repairs or calls a provider, and a failing check never blocks the start.
+`startBot` logs the stages separately and stops at the first failure with a non-zero exit code: **config** (invalid configuration: nothing is created), **database** (open + migrate + structural check; a failed migration or a damaged file never reaches polling and the log carries advice on backup verification and restore), **storage** (the data directory must be readable and writable), **retrieval** (the confidence mode is logged), the cheap **startup check**, then **telegram** (command menu sync + polling start; on failure the database is closed). Nothing logs the configuration, the token or the key. The startup check logs counts only - documents, outdated indexes, missing originals, stale temporary files, orphan files - and points to `npm run integrity` for details; it never reads file contents, repairs or calls a provider, and a failing check never blocks the start.
 
 ## External calls
 
@@ -226,14 +252,15 @@ Retried: 429, 408, 5xx (except 501/505), network resets and timeouts. Never retr
 | every document has an owner and a stored name | `NOT NULL` |
 | full-text index follows the chunks | insert / update / delete triggers (checked by `integrity` against `chunk_fts_docsize`) |
 | duplicate content per user | non-unique index `(user_id, content_hash)` for lookup; the rule is in the use cases (see above) |
-| a chunk's owner equals its document's owner | not a constraint (it needs a composite key and a table rebuild); every write derives it from the document, and `integrity` reports `foreign-chunk` |
+| a chunk's owner equals its document's owner | composite foreign key `(document_id, user_id) REFERENCES documents(id, user_id)` (migration 9). `chunks.user_id` is kept, not derived by a join, because the search filters `WHERE user_id = ? AND embedding_model = ?` straight from `idx_chunks_user_model`; the constraint is what keeps that copy honest. `integrity` still reports `foreign-chunk` for a database written with foreign keys off |
+| chunk position and vector dimension are not negative | `CHECK (chunk_index >= 0)`, `CHECK (embedding_dim >= 0)` (0 is how an unreadable vector is flagged) |
 | feedback: one rating per user and answer, `good`/`bad` | `UNIQUE (request_id, user_id)`, `CHECK` |
 
-`test/infrastructure/schema-constraints.test.ts` pins these.
+`test/infrastructure/schema-constraints.test.ts` pins these. **Reviewed and deliberately left to application code:** document version >= 1 (`NOT NULL DEFAULT 1`; a `CHECK` on `documents` would need a rebuild of the parent table of the foreign keys, which is not worth it for a value only the use cases write), non-empty chunk text (the splitter never produces it, and legacy rows must not make a migration fail), timestamps (ISO strings written by the application), content-hash uniqueness per user (historical duplicates are legitimate data). Triggers were not added.
 
 ## Storage
 
-- Files: `<DATA_DIR>/files/<uuid>-<sanitized name>` (writes go through `.tmp-<uuid>-<name>.part` and a rename); database: `<DATA_DIR>/app.db` (SQLite, WAL, foreign keys on).
+- Files: `<DATA_DIR>/files/<uuid><ext>` - the name is generated by the server, the user's file name is only a database column (writes go through `.tmp-<uuid>.part` and a rename); database: `<DATA_DIR>/app.db` (SQLite, WAL, foreign keys on, see [operations.md](operations.md#sqlite-settings)).
 
 | Table | Purpose |
 | --- | --- |
@@ -254,6 +281,7 @@ Migrations use `PRAGMA user_version` (`src/infrastructure/sqlite/migrations.ts`)
 | 6 | `document_chunks.section_path`, `page_label_start`, `page_label_end` - nullable, **no data rewritten**: older chunks have no section or label until their document is re-chunked, and a reader never invents one |
 | 7 | `documents.content_hash` (unknown for existing rows), `document_version` (1), `updated_at`, `previous_content_hash`; non-unique index `(user_id, content_hash)` - **no data rewritten, no file read** |
 | 8 | `answer_feedback` table |
+| 9 | composite foreign key making a chunk's owner its document's owner, `CHECK`s on chunk position and dimension; the chunk table is rebuilt (same `seq` values, sequence preserved), the FTS triggers are recreated and the index rebuilt. It **refuses** (changing nothing, naming the documents) when existing data would violate the constraints - ownership is never guessed |
 
 **Vector BLOB format** (`src/core/vectors.ts`): the IEEE-754 binary32 value of every dimension, 4 bytes each, **little-endian**, no header; the dimension is in `embedding_dim`. Values that do not fit float32 are rejected like `NaN`/`Infinity`. Scanning float32 blobs instead of JSON text cut a 5000 x 1536 scan from ~264 ms to ~46-75 ms and vectors are ~5x smaller. The scan is still brute force over the user's chunks - fine for thousands of chunks; the `VectorStore` port is the seam for an ANN index later.
 
@@ -295,6 +323,8 @@ Documents are processed one at a time; one failure is recorded and the run conti
 | `MAX_DOCUMENTS_PER_USER` | 100 | Upload rejected with a clear message before any extraction or embedding |
 | `MAX_STORAGE_BYTES_PER_USER` | 200 MB | Sum of a user's original file sizes plus the new file |
 | `MAX_CHUNKS_PER_DOCUMENT` | 2000 | Checked after splitting, before paying for embeddings; also applies when re-chunking and replacing |
+| `MAX_PDF_PAGES` | 1000 | A PDF with more pages is refused before any text is extracted (a PDF of thousands of near-empty pages is small but slow to parse) |
+| Markdown headings with section labels | 5000 | Above this no section labels are produced (the document is indexed and cited by chunk number): labelling compares every chunk with every heading, and 480,000 headings in 2 MB took ~23 s of uninterrupted CPU |
 | `RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_MS` | 10 per 60 s | Sliding window per Telegram user, in memory, for questions, summaries, uploads and voice messages |
 
 The rate limiter is in memory and per process on purpose (single-process long-polling bot, no Redis); it sits behind a small boundary (`src/shared/rate-limiter.ts`, injectable clock). Ingestion of one user is serialized; summaries are computed once per document at a time; everything else relies on SQLite transactions.

@@ -5,12 +5,18 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
-    "reindex": "tsx src/cli/reindex.ts",
-    "integrity": "tsx src/cli/integrity.ts",
-    "backup": "tsx src/cli/backup.ts",
-    "backup:verify": "tsx src/cli/backup-verify.ts",
+    "smoke": "node dist/cli/smoke.js",
+    "smoke:cli": "node dist/cli/smoke-cli.js",
+    "reindex": "node dist/cli/reindex.js",
+    "integrity": "node dist/cli/integrity.js",
+    "backup": "node dist/cli/backup.js",
+    "backup:verify": "node dist/cli/backup-verify.js",
+    "restore": "node dist/cli/restore.js",
+    "diagnostics": "node dist/cli/diagnostics.js",
+    "db:maintenance": "node dist/cli/db-maintenance.js",
     "eval:retrieval": "tsx src/cli/eval-retrieval.ts",
     "eval:confidence": "tsx src/cli/eval-retrieval.ts --calibrate",
     "eval:retrieval:live": "tsx src/cli/eval-retrieval.ts --live",
@@ -19,14 +25,16 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:retrieval": "tsx src/cli/eval-retrieval.ts --baseline eval/baseline.json"
+    "test:coverage": "vitest run --coverage",
+    "test:retrieval": "tsx src/cli/eval-retrieval.ts --baseline eval/baseline.json",
+    "check": "npm run typecheck && npm test && npm run build && npm run smoke && npm run smoke:cli"
   },
   "keywords": [],
   "author": "Alex Tikhon",
   "license": "ISC",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": "^22.12.0 || ^24.0.0"
   },
   "dependencies": {
     "@langchain/core": "^1.1.32",
@@ -41,8 +49,10 @@
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^25.4.0",
+    "@vitest/coverage-v8": "^5.0.3",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "yaml": "^2.9.1"
   }
 }

@@ -1,5 +1,7 @@
 /node_modules
 /dist
+/coverage
+/backups
 .idea
 .vscode
 .env

@@ -1,8 +1,9 @@
 import Database from "better-sqlite3";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { ensurePrivateDirectoryAsync, PRIVATE_FILE_MODE, restrictFileAsync } from "../../shared/fs-permissions.js";
 import { logger } from "../../shared/logger.js";
-import { BACKUP_FORMAT_VERSION, DATABASE_FILE, FILES_DIRECTORY, hashFile, MANIFEST_FILE } from "./manifest.js";
+import { APPLICATION_NAME, BACKUP_FORMAT_VERSION, DATABASE_FILE, FILES_DIRECTORY, hashFile, MANIFEST_FILE } from "./manifest.js";
 import type { BackupManifest } from "./manifest.js";
 
 export type CreateBackupOptions = {
@@ -46,11 +47,13 @@ export async function createBackup(options: CreateBackupOptions): Promise<Backup
     throw new Error(`The backup directory ${outputDir} is not empty; choose a new one.`);
   }
 
-  await fs.mkdir(path.join(outputDir, FILES_DIRECTORY), { recursive: true });
+  // A backup holds users' documents: readable by its owner only.
+  await ensurePrivateDirectoryAsync(path.join(outputDir, FILES_DIRECTORY));
 
   try {
     const databasePath = path.join(outputDir, DATABASE_FILE);
     await db.backup(databasePath);
+    await restrictFileAsync(databasePath);
 
     const snapshot = readSnapshot(databasePath);
     const files: BackupManifest["files"] = [];
@@ -62,7 +65,13 @@ export async function createBackup(options: CreateBackupOptions): Promise<Backup
       }
       const target = path.join(outputDir, FILES_DIRECTORY, storedName);
       try {
-        await fs.copyFile(path.join(filesDir, storedName), target);
+        const source = path.join(filesDir, storedName);
+        // A link in the storage directory is never followed: copying it would put some other file of the machine into the backup.
+        if (!(await fs.lstat(source)).isFile()) {
+          throw new Error(`Stored file ${storedName} is not a regular file`);
+        }
+        await fs.copyFile(source, target);
+        await restrictFileAsync(target);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           missingFiles.push(storedName);
@@ -76,7 +85,7 @@ export async function createBackup(options: CreateBackupOptions): Promise<Backup
     const manifest: BackupManifest = {
       formatVersion: BACKUP_FORMAT_VERSION,
       createdAt: options.now().toISOString(),
-      application: { name: "telegram-rag-bot", version: options.applicationVersion },
+      application: { name: APPLICATION_NAME, version: options.applicationVersion },
       schemaVersion: snapshot.schemaVersion,
       database: { file: DATABASE_FILE, bytes: (await fs.stat(databasePath)).size, sha256: await hashFile(databasePath) },
       counts: { documents: snapshot.documents, chunks: snapshot.chunks, files: files.length },
@@ -87,7 +96,7 @@ export async function createBackup(options: CreateBackupOptions): Promise<Backup
 
     // Last, and atomically: a directory without manifest.json is not a finished backup.
     const manifestPath = path.join(outputDir, MANIFEST_FILE);
-    await fs.writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2));
+    await fs.writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2), { mode: PRIVATE_FILE_MODE });
     await fs.rename(`${manifestPath}.tmp`, manifestPath);
 
     log.info({ documents: manifest.counts.documents, files: files.length, missingFiles: missingFiles.length }, "Backup created");

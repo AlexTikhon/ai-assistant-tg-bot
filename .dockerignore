@@ -1,0 +1,41 @@
+# What the image build does not need - and must never contain.
+# The build needs only: package.json, package-lock.json, tsconfig.json, tsconfig.build.json and src/ (see Dockerfile).
+# (In a .dockerignore, a pattern without "**/" only matches at the root of the build context.)
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Secrets and local configuration: never in an image, at any depth
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+
+# Local data, backups and logs: user documents must never be baked into an image
+data
+backups
+logs
+**/*.log
+
+# Dependencies and build output are rebuilt inside the image
+**/node_modules
+dist
+coverage
+
+# Editors and OS files
+.idea
+.vscode
+**/.DS_Store
+**/Thumbs.db
+
+# Not needed to build or run
+test
+eval
+docs
+scripts
+README.md
+Dockerfile
+.dockerignore
+compose.yaml

@@ -274,7 +274,112 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    name: "a chunk's owner must be its document's owner (composite foreign key); range checks on chunk positions and dimensions",
+    up(db) {
+      // document_chunks.user_id is deliberately kept: the search reads `WHERE user_id = ? AND embedding_model = ?` straight from
+      // idx_chunks_user_model without joining documents, and every query filters by owner. A copy of the owner is only safe if the
+      // database refuses a different one, which a composite foreign key does: (document_id, user_id) must exist in documents.
+      const violations = findVersion9Violations(db);
+      if (violations.length > 0) {
+        // Nothing has been changed (the migration runs in a transaction). Ownership is never guessed or "repaired" here.
+        throw new Error(
+          `Migration 9 cannot run: ${violations.join("; ")}. The database was not changed. ` +
+            "Restore a verified backup (npm run restore), or correct these rows yourself, and start again.",
+        );
+      }
+
+      // The parent key of a composite foreign key must be unique. `id` alone already is, so this index adds no restriction.
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_id_user ON documents(id, user_id)");
+
+      // seq's AUTOINCREMENT counter must not move backwards: the full-text index addresses chunks by seq.
+      const counter = db.prepare<[], { seq: number }>("SELECT seq FROM sqlite_sequence WHERE name = 'document_chunks'").get()?.seq;
+
+      db.exec(`
+        CREATE TABLE document_chunks_v9 (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT NOT NULL UNIQUE,
+          document_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+          content TEXT NOT NULL,
+          embedding BLOB NOT NULL,
+          embedding_model TEXT NOT NULL,
+          embedding_dim INTEGER NOT NULL CHECK (embedding_dim >= 0),
+          created_at TEXT NOT NULL,
+          page_start INTEGER,
+          page_end INTEGER,
+          page_label_start TEXT,
+          page_label_end TEXT,
+          section_path TEXT,
+          UNIQUE (document_id, chunk_index),
+          FOREIGN KEY (document_id, user_id) REFERENCES documents(id, user_id) ON DELETE CASCADE
+        );
+
+        INSERT INTO document_chunks_v9
+          (seq, id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at,
+           page_start, page_end, page_label_start, page_label_end, section_path)
+        SELECT seq, id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at,
+               page_start, page_end, page_label_start, page_label_end, section_path
+        FROM document_chunks ORDER BY seq;
+
+        DROP TABLE document_chunks;
+        ALTER TABLE document_chunks_v9 RENAME TO document_chunks;
+        CREATE INDEX idx_chunks_user_model ON document_chunks(user_id, embedding_model);
+      `);
+
+      if (counter !== undefined) {
+        db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'document_chunks'").run(counter);
+      }
+
+      // Dropping the table dropped its triggers (the full-text index itself is untouched): create them again, exactly as in version 4,
+      // and rebuild the index from the copied text so it is consistent whatever state it was in before.
+      db.exec(`
+        CREATE TRIGGER chunks_fts_insert AFTER INSERT ON document_chunks BEGIN
+          INSERT INTO chunk_fts(rowid, content) VALUES (new.seq, new.content);
+        END;
+        CREATE TRIGGER chunks_fts_delete AFTER DELETE ON document_chunks BEGIN
+          INSERT INTO chunk_fts(chunk_fts, rowid, content) VALUES ('delete', old.seq, old.content);
+        END;
+        CREATE TRIGGER chunks_fts_update AFTER UPDATE OF content ON document_chunks BEGIN
+          INSERT INTO chunk_fts(chunk_fts, rowid, content) VALUES ('delete', old.seq, old.content);
+          INSERT INTO chunk_fts(rowid, content) VALUES (new.seq, new.content);
+        END;
+        INSERT INTO chunk_fts(chunk_fts) VALUES ('rebuild');
+      `);
+    },
+  },
 ];
+
+/** What in the existing data the version-9 constraints would reject, described for the operator (counts and opaque ids only). */
+function findVersion9Violations(db: Database.Database): string[] {
+  const problems: string[] = [];
+  const describe = (count: number, what: string, ids: Array<{ id: string }>) => {
+    if (count > 0) {
+      problems.push(`${count} ${what}${ids.length > 0 ? ` (documents ${ids.map((row) => row.id).join(", ")}${count > ids.length ? ", ..." : ""})` : ""}`);
+    }
+  };
+
+  const foreign = "FROM document_chunks c JOIN documents d ON d.id = c.document_id WHERE c.user_id != d.user_id";
+  describe(
+    db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n ${foreign}`).get()?.n ?? 0,
+    "chunks are recorded for a different user than their document",
+    db.prepare<[], { id: string }>(`SELECT DISTINCT c.document_id AS id ${foreign} ORDER BY c.document_id LIMIT 5`).all(),
+  );
+
+  const orphans = "FROM document_chunks c WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = c.document_id)";
+  describe(
+    db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n ${orphans}`).get()?.n ?? 0,
+    "chunks belong to a document that does not exist",
+    db.prepare<[], { id: string }>(`SELECT DISTINCT c.document_id AS id ${orphans} ORDER BY c.document_id LIMIT 5`).all(),
+  );
+
+  const invalid = "FROM document_chunks WHERE chunk_index < 0 OR embedding_dim < 0";
+  describe(db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n ${invalid}`).get()?.n ?? 0, "chunks have a negative position or vector dimension", []);
+
+  return problems;
+}
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1].version;
 

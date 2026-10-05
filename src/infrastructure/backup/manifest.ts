@@ -7,8 +7,36 @@ export const MANIFEST_FILE = "manifest.json";
 export const DATABASE_FILE = "app.db";
 export const FILES_DIRECTORY = "files";
 
-/** Bump when the layout or the meaning of the manifest changes incompatibly. */
+/** The `application.name` every backup of this application carries; a backup of something else is refused. */
+export const APPLICATION_NAME = "telegram-rag-bot";
+
+/**
+ * The backup format version (`formatVersion` in the manifest): the layout of the directory and the meaning of the manifest.
+ * Bump it when either changes incompatibly. It is NOT the database schema: the schema version inside the manifest
+ * (`schemaVersion`) says how the database inside is shaped, and an older schema is migrated on restore.
+ */
 export const BACKUP_FORMAT_VERSION = 1;
+
+/** The oldest format this version can still read. Formats from here up to BACKUP_FORMAT_VERSION are supported. */
+export const MIN_SUPPORTED_BACKUP_FORMAT = 1;
+
+export type BackupFormatSupport =
+  /** Readable. (An older database schema inside is a separate matter: it is migrated on the restore candidate.) */
+  | { kind: "supported" }
+  /** Written by a newer application: its layout may mean something this version does not know. Never guessed at. */
+  | { kind: "newer"; message: string }
+  /** Older than the oldest layout this version reads. */
+  | { kind: "too-old"; message: string };
+
+export function classifyBackupFormat(formatVersion: number): BackupFormatSupport {
+  if (formatVersion > BACKUP_FORMAT_VERSION) {
+    return { kind: "newer", message: `The backup format version ${formatVersion} is newer than this application understands (${BACKUP_FORMAT_VERSION}). Use the version of the application that made it, or a newer one.` };
+  }
+  if (formatVersion < MIN_SUPPORTED_BACKUP_FORMAT) {
+    return { kind: "too-old", message: `The backup format version ${formatVersion} is older than the oldest this application can read (${MIN_SUPPORTED_BACKUP_FORMAT}).` };
+  }
+  return { kind: "supported" };
+}
 
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/, "must be a SHA-256 hex digest");
 const count = z.number().int().nonnegative();

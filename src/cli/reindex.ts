@@ -1,7 +1,9 @@
 import "dotenv/config";
+import "./quiet-logs.js";
 import { createReindexTool } from "../composition-root.js";
 import { loadToolConfig, openAiConfig } from "../config/config.js";
 import { formatProgress, formatReport, parseReindexArgs, REINDEX_USAGE } from "./reindex-cli.js";
+import { runCli } from "./run-cli.js";
 
 /**
  * `npm run reindex [-- --all | --document <id>] [--rechunk] [--dry-run]`. Exit code 1 on bad input or failed
@@ -36,12 +38,4 @@ async function main() {
   }
 }
 
-main().then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exitCode = 1;
-  },
-);
+runCli(main);
