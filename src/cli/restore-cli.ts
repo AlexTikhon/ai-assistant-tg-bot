@@ -12,6 +12,7 @@ Usage: npm run restore -- --from <backup-directory> [options]
                         The replaced installation is KEPT in <data dir>/.restore-previous-*, not deleted.
   --discard-previous    with --replace-existing: delete the replaced installation after a successful restore
   --dry-run             verify the backup and prepare + check the candidate, then stop: nothing is changed
+  --allow-incomplete    explicitly recover a partial backup with originals recorded as missing
   --help                show this help
 
 What it does, in this order, and stops at the first failure without touching the live installation:
@@ -24,7 +25,7 @@ What it does, in this order, and stops at the first failure without touching the
 Stop the bot before restoring. It needs no API key and no bot token and never calls any provider.`;
 
 export type RestoreCommand =
-  | { kind: "run"; from: string; target: string | undefined; replaceExisting: boolean; discardPrevious: boolean; dryRun: boolean }
+  | { kind: "run"; from: string; target: string | undefined; replaceExisting: boolean; discardPrevious: boolean; dryRun: boolean; allowIncomplete?: boolean }
   | { kind: "help" }
   | { kind: "error"; message: string };
 
@@ -38,6 +39,7 @@ export function parseRestoreArgs(argv: string[]): RestoreCommand {
         "replace-existing": { type: "boolean" },
         "discard-previous": { type: "boolean" },
         "dry-run": { type: "boolean" },
+        "allow-incomplete": { type: "boolean" },
         help: { type: "boolean" },
       },
       strict: true,
@@ -56,6 +58,7 @@ export function parseRestoreArgs(argv: string[]): RestoreCommand {
       replaceExisting: values["replace-existing"] ?? false,
       discardPrevious: values["discard-previous"] ?? false,
       dryRun: values["dry-run"] ?? false,
+      ...(values["allow-incomplete"] ? { allowIncomplete: true } : {}),
     };
   } catch (error) {
     return { kind: "error", message: error instanceof Error ? error.message : String(error) };

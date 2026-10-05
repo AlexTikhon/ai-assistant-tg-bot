@@ -57,6 +57,8 @@ export type RestoreOptions = {
   discardPrevious?: boolean;
   /** Prepare and check everything, change nothing, remove the staging area. */
   dryRun?: boolean;
+  /** Explicitly accept a partial backup with originals recorded as missing. */
+  allowIncomplete?: boolean;
   /** What a current index means (the configured embedding model and chunking): only used to point out outdated documents. */
   recipe: Omit<ActiveRecipe, "embeddingDimension">;
   /** Passed to the migrations of an older backup. */
@@ -116,7 +118,7 @@ export async function restoreBackup(options: RestoreOptions): Promise<RestoreRep
   }
 
   // 1. The backup must be sound. Read-only, and nothing below runs when it is not.
-  const verification = await verifyBackup(backupDir, { recipe: options.recipe, now: () => options.now().getTime() });
+  const verification = await verifyBackup(backupDir, { recipe: options.recipe, now: () => options.now().getTime(), allowIncomplete: options.allowIncomplete });
   if (!verification.ok || !verification.manifest) {
     throw new RestoreError("verify", "The backup did not pass verification; nothing was changed.", verification.problems);
   }
@@ -363,7 +365,7 @@ async function prepareCandidate({ stagedDb, stagedFiles, manifest, options, warn
     }).execute();
 
     const errors = integrity.issues.filter(
-      (issue) => issue.severity === "error" && !(issue.code === "missing-file" && issue.documentId && missingDocuments.has(issue.documentId)),
+      (issue) => issue.severity === "error" && !(options.allowIncomplete && issue.code === "missing-file" && issue.documentId && missingDocuments.has(issue.documentId)),
     );
     if (errors.length > 0) {
       throw new RestoreError("prepare", "The restored database failed the integrity check; the live installation was not changed.", errors.map((issue) => `${issue.code}: ${issue.message}`));

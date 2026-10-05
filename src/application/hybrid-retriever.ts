@@ -14,6 +14,7 @@ import { analyzeQuery } from "../core/technical-tokens.js";
 import type { EmbeddingsProvider } from "./ports/embeddings-provider.js";
 import type { VectorStore } from "./ports/vector-store.js";
 import { ensureQueryEmbedding } from "./validate-embeddings.js";
+import { operationSignal, operationStep } from "../shared/operation.js";
 
 export type RetrievalOptions = {
   /** Maximum number of chunks handed to the model. */
@@ -199,7 +200,7 @@ export class HybridRetriever {
     const { embeddings, vectorStore, options } = this.deps;
 
     const [queryEmbedding, embeddingMs] = await this.timed(async () => {
-      const vector = await embeddings.embedQuery(input.question);
+      const vector = await operationStep(() => embeddings.embedQuery(input.question, { signal: operationSignal() }));
       ensureQueryEmbedding(vector);
       return vector;
     });

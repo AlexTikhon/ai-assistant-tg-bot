@@ -50,7 +50,7 @@ or `docker compose up -d --build` (one service, the `.env` file, one named volum
 - **Image.** Multi-stage, `node:24-bookworm-slim` (Debian, not Alpine: `better-sqlite3` is a native module with prebuilt glibc binaries). Dependencies come from the lockfile (`npm ci`), TypeScript is compiled in the build stage and `npm prune --omit=dev` leaves production dependencies only. The final image holds `dist/`, `node_modules/` and `package.json` - no sources, tests, `.env`, data or secrets.
 - **User.** The process runs as the unprivileged `node` user, never root. The data directory `/data` is created owned by that user (mode 700).
 - **Secrets** are passed at run time (`--env-file`, `-e`, compose `env_file`). Nothing is baked into the image; `.dockerignore` keeps `.env*`, `data/`, `backups/` and logs out of the build context (a test checks it).
-- **Shutdown.** `docker stop` sends SIGTERM: the bot stops polling, finishes the updates in flight, closes the database and exits within 15 s (`--stop-timeout`/`stop_grace_period` 20 s leaves room). `--init` is recommended (zombie reaping) but not required.
+- **Shutdown.** `docker stop` sends SIGTERM: the bot stops polling, aborts updates and provider calls, waits for actual middleware/adapter work and file cleanup, then closes storage. A stuck shutdown forces exit after 15 s (`--stop-timeout`/`stop_grace_period` 20 s leaves room). `--init` is recommended (zombie reaping) but not required.
 - **Operational commands in the container:** `docker exec rag-bot node dist/cli/integrity.js`, `docker exec rag-bot node dist/cli/backup.js --output /backups/before-upgrade` (with `-v /srv/rag-backups:/backups` on the `docker run`), and so on. To run one against the volume while the bot is stopped:
   `docker run --rm -v rag-bot-data:/data telegram-rag-bot node dist/cli/diagnostics.js`.
 - **No HEALTHCHECK, deliberately.** See [Is it up?](#is-it-up-health-and-readiness).
@@ -98,6 +98,10 @@ npm run backup:verify -- ./backups/before-upgrade
 ```
 
 Safe while the bot runs (SQLite's online backup API, a point-in-time snapshot). A backup is a directory: `app.db`, `files/<stored name>` and `manifest.json` (written last - no manifest, no finished backup). It contains user documents and **never** `.env`, keys, the bot token or logs; treat it as sensitive data anyway (directories 0700, files 0600). `backup:verify` checks the manifest, the format version, the SHA-256 of every file and of the database, SQLite's structural check, that every document's file is present, and runs the integrity checks - including the deep full-text check - on the copy.
+
+Backup holds a SQLite `BEGIN IMMEDIATE` write barrier from snapshot creation through copying originals and writing the manifest. Readers continue; document mutations wait and can exceed their busy timeout during a large backup. Stop the bot for large backups to avoid failed writes. The barrier requires write access to the source database, but does not modify it. It is released on success and failure. Files referenced by the snapshot cannot be removed by normal document mutations during copying.
+
+Missing originals make creation, verification and restore fail by default. For deliberate partial disaster recovery only, pass `--allow-incomplete` separately to `backup`, `backup:verify` and `restore`. This accepts files explicitly recorded as missing in the manifest and reports warnings; hash mismatches, undeclared missing files and other integrity failures still fail. A partial restore preserves database content but cannot recover those originals.
 
 ### Format and compatibility
 

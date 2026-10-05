@@ -1,6 +1,7 @@
 import type { ChunkMatch, StoredChunk } from "../../core/retrieval.js";
 import type { ChunkText } from "../../core/document.js";
 import type { StoredIndexProfile } from "../../core/index-profile.js";
+import type { IndexRevision } from "./document-repository.js";
 
 export type SimilaritySearch = {
   userId: string;
@@ -25,6 +26,7 @@ export type LexicalSearch = {
 /** The new vector of one chunk, addressed by its position in the document. */
 export type EmbeddingUpdate = {
   chunkIndex: number;
+  chunkId?: string;
   embedding: number[];
 };
 
@@ -54,6 +56,7 @@ export interface VectorStore {
     model: string,
     updates: EmbeddingUpdate[],
     profile?: StoredIndexProfile,
+    expectedRevision?: IndexRevision,
   ): Promise<void>;
   /** Removes a document's vectors. Idempotent; a no-op when deleting the document already cascaded. */
   deleteByDocument(userId: string, documentId: string): Promise<void>;

@@ -161,6 +161,7 @@ export const limitsConfig = section(
     MAX_DOCUMENTS_PER_USER: positiveInt(100),
     MAX_STORAGE_BYTES_PER_USER: positiveInt(200 * 1024 * 1024),
     MAX_CHUNKS_PER_DOCUMENT: positiveInt(2000),
+    MAX_CHUNKS_PER_USER: positiveInt(10_000),
     /** A PDF with more pages is refused before any text is extracted (a PDF of thousands of near-empty pages is small but slow to parse). */
     MAX_PDF_PAGES: positiveInt(1000),
   }),
@@ -168,6 +169,7 @@ export const limitsConfig = section(
     maxDocumentsPerUser: env.MAX_DOCUMENTS_PER_USER,
     maxStorageBytesPerUser: env.MAX_STORAGE_BYTES_PER_USER,
     maxChunksPerDocument: env.MAX_CHUNKS_PER_DOCUMENT,
+    maxChunksPerUser: env.MAX_CHUNKS_PER_USER,
     maxPdfPages: env.MAX_PDF_PAGES,
   }),
 );

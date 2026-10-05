@@ -9,7 +9,8 @@ import type { TelegramDependencies } from "./register-handlers.js";
  */
 export function createBot(token: string, handlerTimeoutMs: number, deps: TelegramDependencies, telegram?: Partial<Telegraf.Options<Context>["telegram"]>) {
   // Telegraf's default handler timeout is 90s, too short for indexing a large PDF.
-  const bot = new Telegraf(token, { handlerTimeout: handlerTimeoutMs, ...(telegram ? { telegram } : {}) });
-  registerHandlers(bot, deps);
+  // The application deadline cancels work and replies first; Telegraf is only the final fallback.
+  const bot = new Telegraf(token, { handlerTimeout: handlerTimeoutMs + 5000, ...(telegram ? { telegram } : {}) });
+  registerHandlers(bot, deps, handlerTimeoutMs);
   return bot;
 }

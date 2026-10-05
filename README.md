@@ -111,7 +111,7 @@ CI (`.github/workflows/ci.yml`) runs the deterministic checks on Node 24 and 22,
 
 ## Known limitations
 
-- Semantic search is a brute-force scan of one user's vectors (thousands of chunks, not millions); the `VectorStore` port is the seam for an ANN index.
+- Semantic search scans one user's vectors in a bounded worker queue with O(K) candidate memory. `MAX_CHUNKS_PER_USER` defaults to 10,000; the `VectorStore` port is the seam for an ANN index if this scale is exceeded.
 - The confidence gate's similarity threshold (0.5) was calibrated on synthetic embeddings and is **not validated against real embeddings** - hence `shadow` by default.
 - No OCR (scanned PDFs are rejected); PDF citations use physical page indexes.
 - Single process (SQLite file, long polling); the rate limit is in memory and resets on restart.

@@ -4,6 +4,7 @@ import { logger } from "../../shared/logger.js";
 import type { DocumentRepository } from "../ports/document-repository.js";
 import type { FileStorage } from "../ports/file-storage.js";
 import type { VectorStore } from "../ports/vector-store.js";
+import { throwIfCancelled } from "../../shared/operation.js";
 
 type Dependencies = {
   documents: DocumentRepository;
@@ -39,6 +40,7 @@ export class DeleteDocumentUseCase {
   }
 
   private async delete(userId: string, documentId: string): Promise<void> {
+    throwIfCancelled();
     const { documents, vectorStore, files } = this.deps;
 
     const document = await documents.findById(userId, documentId);

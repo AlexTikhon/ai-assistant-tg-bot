@@ -1,3 +1,5 @@
+import { throwIfCancelled } from "./operation.js";
+
 /**
  * Runs async tasks that share a key strictly one after another (FIFO); tasks with different keys
  * run concurrently. A failing task rejects only its own caller. Finished keys are forgotten.
@@ -14,7 +16,8 @@ export class KeyedMutex {
 
   run<T>(key: string, task: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(key) ?? Promise.resolve();
-    const result = previous.then(task, task);
+    const invoke = () => { throwIfCancelled(); return task(); };
+    const result = previous.then(invoke, invoke);
     const tail = result.catch(() => undefined);
 
     this.tails.set(key, tail);
@@ -24,6 +27,8 @@ export class KeyedMutex {
       }
     });
 
+    // Keep the actual task attached to its caller so shutdown can join storage writes/compensation.
+    // The enclosing operation owns the deadline race; queued tasks check cancellation before starting.
     return result;
   }
 }

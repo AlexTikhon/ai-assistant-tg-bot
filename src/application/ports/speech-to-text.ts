@@ -1,3 +1,5 @@
+import type { OperationOptions } from "../../shared/operation.js";
+
 export type AudioInput = {
   data: Buffer;
   fileName: string;
@@ -6,5 +8,5 @@ export type AudioInput = {
 
 export interface SpeechToText {
   /** Returns the transcription (possibly empty). Throws ExternalServiceError on provider failures. */
-  transcribe(audio: AudioInput): Promise<string>;
+  transcribe(audio: AudioInput, options?: OperationOptions): Promise<string>;
 }

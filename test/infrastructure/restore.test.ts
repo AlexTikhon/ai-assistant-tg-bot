@@ -110,6 +110,21 @@ const rewriteManifest = (dir: string, change: (manifest: BackupManifest) => unkn
 };
 
 describe("restore: a valid backup", () => {
+  it("refuses a declared incomplete backup unless partial recovery is explicit", async () => {
+    const source = await installation("partial-source", [["cat.txt", CAT]]);
+    const storedName = (source.db.prepare("SELECT stored_name AS name FROM documents").get() as { name: string }).name;
+    fs.unlinkSync(path.join(source.target.filesDir, storedName));
+    const outputDir = path.join(root, "partial-backup");
+    try {
+      await createBackup({ db: source.db, filesDir: source.target.filesDir, outputDir, now: () => NOW, applicationVersion: "test", allowIncomplete: true });
+    } finally { source.close(); }
+    const target = targetAt("partial-live");
+    const error = await failure(restore(outputDir, target));
+    expect(error.phase).toBe("verify");
+    expect(fs.existsSync(target.sqlitePath)).toBe(false);
+    expect(await restore(outputDir, target, { allowIncomplete: true })).toMatchObject({ outcome: "restored", documents: 1, files: 0 });
+  });
+
   it("restores into an empty target: database, files and counts", async () => {
     const backup = await makeBackup("a");
     const target = targetAt("live");
@@ -625,7 +640,7 @@ describe("restore: a backup from an older schema is migrated in the candidate", 
     const report = await restore(backup.dir, target);
 
     expect(report.schema).toEqual({ backup: 8, restored: LATEST_SCHEMA_VERSION });
-    expect(report.warnings.join("\n")).toMatch(/migrated to schema 9/);
+    expect(report.warnings.join("\n")).toContain(`migrated to schema ${LATEST_SCHEMA_VERSION}`);
     const db = openDatabaseReadOnly(target.sqlitePath);
     expect(db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(db.prepare("SELECT COUNT(*) AS n FROM chunk_fts WHERE chunk_fts MATCH 'cat'").get()).toEqual({ n: 1 });

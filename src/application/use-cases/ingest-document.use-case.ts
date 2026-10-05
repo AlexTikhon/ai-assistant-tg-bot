@@ -15,6 +15,7 @@ import type { DocumentRepository } from "../ports/document-repository.js";
 import type { EmbeddingsProvider } from "../ports/embeddings-provider.js";
 import type { FileStorage } from "../ports/file-storage.js";
 import type { DocumentTextExtractor } from "../ports/text-extractor.js";
+import { throwIfCancelled } from "../../shared/operation.js";
 
 export type IngestDocumentInput = {
   userId: string;
@@ -67,6 +68,7 @@ type Dependencies = {
     maxDocumentsPerUser: number;
     maxStorageBytesPerUser: number;
     maxChunksPerDocument: number;
+    maxChunksPerUser?: number;
   };
 };
 
@@ -100,6 +102,7 @@ export class IngestDocumentUseCase {
   }
 
   private async ingest(input: IngestDocumentInput): Promise<IngestDocumentResult> {
+    throwIfCancelled();
     const startedAt = Date.now();
     const { documents, files, extractor, embeddings, options } = this.deps;
     // The name is metadata: cleaned of control and direction characters and bounded, never used as a path (the stored file gets a generated name).
@@ -141,10 +144,14 @@ export class IngestDocumentUseCase {
 
     await this.assertWithinQuota(input.userId, input.data.byteLength);
 
-    const prepared = await prepareIndex({ extractor, embeddings }, { ...input, fileName }, options);
+    const maxChunksPerUser = options.maxChunksPerUser ?? 10_000;
+    const prepared = await prepareIndex({ extractor, embeddings }, { ...input, fileName }, {
+      ...options, maxChunksPerUser, remainingChunks: maxChunksPerUser - await documents.countChunksForUser(input.userId),
+    });
 
     const documentId = (this.deps.newId ?? randomUUID)();
     const createdAt = new Date().toISOString();
+    throwIfCancelled();
     const storedName = await files.save(fileName, input.data);
 
     const document: DocumentRecord = {
@@ -164,7 +171,8 @@ export class IngestDocumentUseCase {
     const chunks = toChunkRecords(prepared, { documentId, userId: input.userId, createdAt });
 
     try {
-      await documents.saveWithChunks(document, chunks);
+      throwIfCancelled();
+      await documents.saveWithChunks(document, chunks, maxChunksPerUser);
     } catch (error) {
       await files
         .delete(storedName)

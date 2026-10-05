@@ -12,11 +12,15 @@ import type { EmbeddingsProvider } from "./ports/embeddings-provider.js";
 import type { DocumentTextExtractor, ExtractionInput } from "./ports/text-extractor.js";
 import { countEmbeddingRequests } from "../core/embedding-batches.js";
 import { ensureEmbeddingBatch } from "./validate-embeddings.js";
+import { operationSignal, operationStep } from "../shared/operation.js";
 
 export type PrepareIndexOptions = {
   chunkSize: number;
   chunkOverlap: number;
   maxChunksPerDocument: number;
+  maxChunksPerUser?: number;
+  /** Remaining user capacity, including any chunks this operation replaces. */
+  remainingChunks?: number;
 };
 
 /** Everything needed to persist a document's index; nothing has been written yet. */
@@ -43,7 +47,7 @@ export async function prepareIndex(
 ): Promise<PreparedIndex> {
   const { extractor, embeddings } = deps;
 
-  const { text, pageSpans } = buildDocumentText(await extractor.extract(input));
+  const { text, pageSpans } = buildDocumentText(await operationStep(() => extractor.extract(input, { signal: operationSignal() })));
   if (!text) {
     throw new ValidationError("Could not extract text from the uploaded file.");
   }
@@ -57,13 +61,16 @@ export async function prepareIndex(
       `This document is too large to index (it would need ${drafts.length} chunks; the limit is ${options.maxChunksPerDocument}). Try splitting it.`,
     );
   }
+  if (options.remainingChunks !== undefined && drafts.length > options.remainingChunks) {
+    throw new ValidationError(`This file would exceed your total chunk limit of ${options.maxChunksPerUser}. Delete a document or split the file.`);
+  }
 
   // Markdown only (by extension): the headings of the normalized text, whose offsets are those of the splitter.
   // Past the bound the section labels are left out (the document is still indexed and cited by chunk number): see MAX_SECTION_HEADINGS.
   const parsedHeadings = getFileExtension(input.fileName) === ".md" ? parseMarkdownHeadings(text) : [];
   const headings = parsedHeadings.length <= MAX_SECTION_HEADINGS ? parsedHeadings : [];
 
-  const vectors = await embeddings.embedDocuments(drafts.map((draft) => draft.content));
+  const vectors = await operationStep(() => embeddings.embedDocuments(drafts.map((draft) => draft.content), { signal: operationSignal() }));
   ensureEmbeddingBatch(vectors, drafts.length);
 
   return {

@@ -13,6 +13,7 @@ import type { EmbeddingsProvider } from "../ports/embeddings-provider.js";
 import type { FileStorage } from "../ports/file-storage.js";
 import type { DocumentTextExtractor } from "../ports/text-extractor.js";
 import type { IngestDocumentResult } from "./ingest-document.use-case.js";
+import { throwIfCancelled } from "../../shared/operation.js";
 
 export type ReplaceDocumentInput = {
   userId: string;
@@ -49,6 +50,7 @@ type Dependencies = {
     chunkOverlap: number;
     maxStorageBytesPerUser: number;
     maxChunksPerDocument: number;
+    maxChunksPerUser?: number;
   };
 };
 
@@ -82,6 +84,7 @@ export class ReplaceDocumentUseCase {
   }
 
   private async replace(input: ReplaceDocumentInput): Promise<ReplaceDocumentResult> {
+    throwIfCancelled();
     const startedAt = Date.now();
     const { documents, files, extractor, embeddings, options } = this.deps;
     const fileName = normalizeDisplayFileName(input.fileName); // metadata only; see IngestDocumentUseCase
@@ -135,14 +138,19 @@ export class ReplaceDocumentUseCase {
     }
 
     // Prepare: the only paid and failure-prone steps. Nothing has been changed yet.
-    const prepared = await prepareIndex({ extractor, embeddings }, { ...input, fileName }, options);
+    const maxChunksPerUser = options.maxChunksPerUser ?? 10_000;
+    const remainingChunks = maxChunksPerUser - await documents.countChunksForUser(input.userId) + await documents.countChunks(input.userId, input.documentId);
+    const prepared = await prepareIndex({ extractor, embeddings }, { ...input, fileName }, { ...options, maxChunksPerUser, remainingChunks });
 
     const updatedAt = new Date().toISOString();
+    throwIfCancelled();
     const storedName = await files.save(fileName, input.data);
 
     let swap;
     try {
+      throwIfCancelled();
       swap = await documents.replaceDocument(input.userId, input.documentId, {
+        maxChunksPerUser,
         fileName,
         storedName,
         mimeType: input.mimeType,

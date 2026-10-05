@@ -7,6 +7,7 @@ import type { DownloadLimits } from "../download.js";
 import { messages } from "../ui/messages.js";
 import { replyWithAnswer } from "./ask.handler.js";
 import type { AnswerReplyOptions } from "./ask.handler.js";
+import { operationSignal, operationStep } from "../../shared/operation.js";
 
 /** A voice message: download, transcribe, then answer it like a typed question. */
 export function createVoiceHandler(
@@ -29,11 +30,11 @@ export function createVoiceHandler(
 
     const transcript = await withChatAction(ctx, "typing", async () => {
       const data = await downloadTelegramFile(ctx, voice.file_id, limits);
-      return speechToText.transcribe({
+      return operationStep(() => speechToText.transcribe({
         data,
         fileName: "voice.ogg",
         mimeType: voice.mime_type ?? "audio/ogg",
-      });
+      }, { signal: operationSignal() }));
     });
 
     if (!transcript) {

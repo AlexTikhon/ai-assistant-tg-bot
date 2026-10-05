@@ -10,18 +10,15 @@ import type { SourceProvenance } from "../../core/provenance.js";
 import type { StoredIndexProfile } from "../../core/index-profile.js";
 import { buildLexicalQuery } from "../../core/lexical-query.js";
 import type { ChunkMatch, StoredChunk } from "../../core/retrieval.js";
-import { cosineSimilarity, decodeVector, encodeVector, VectorError } from "../../core/vectors.js";
+import { encodeVector } from "../../core/vectors.js";
 import { logger } from "../../shared/logger.js";
 import { profileColumns } from "./profile-column.js";
-
-/** Only what scoring needs: no chunk text is read while ranking. */
-type VectorRow = {
-  id: string;
-  document_id: string;
-  chunk_index: number;
-  embedding: Buffer;
-  embedding_dim: number;
-};
+import { assertIndexRevision } from "./index-revision.js";
+import type { IndexRevision } from "../../application/ports/document-repository.js";
+import { operationSignal, throwIfCancelled } from "../../shared/operation.js";
+import { scoreVectors, VECTOR_COLUMNS } from "./semantic-search.js";
+import type { VectorRow } from "./semantic-search.js";
+import type { SemanticScanner } from "./semantic-scanner.js";
 
 type ChunkRow = Omit<StoredChunk, keyof SourceProvenance> & {
   pageStart: number | null;
@@ -53,8 +50,6 @@ type LexicalRow = {
 
 const log = logger.child({ component: "sqlite-vector-store" });
 
-const VECTOR_COLUMNS = `SELECT id, document_id, chunk_index, embedding, embedding_dim FROM document_chunks
-  WHERE user_id = @userId AND embedding_model = @embeddingModel`;
 
 // CROSS JOIN pins the order: the FTS index finds the matches first, then each is looked up by primary key
 // and filtered by user. With a plain JOIN the planner may scan all of the user's chunks and repeat the
@@ -63,9 +58,6 @@ export const LEXICAL_SELECT = `SELECT c.id, c.document_id, c.chunk_index, -bm25(
   FROM chunk_fts CROSS JOIN document_chunks c ON c.seq = chunk_fts.rowid
   WHERE chunk_fts MATCH @match AND c.user_id = @userId`;
 
-function byScore(a: ChunkMatch, b: ChunkMatch) {
-  return b.score - a.score || a.documentId.localeCompare(b.documentId) || a.chunkIndex - b.chunkIndex;
-}
 
 /**
  * Chunk search in SQLite.
@@ -89,7 +81,7 @@ export class SqliteVectorStore implements VectorStore {
   private readonly updateProfile;
   private readonly replaceTransaction;
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, private readonly scanner?: SemanticScanner) {
     this.selectVectors = db.prepare<Record<string, string>, VectorRow>(VECTOR_COLUMNS);
     this.selectDocumentVectors = db.prepare<Record<string, string>, VectorRow>(
       `${VECTOR_COLUMNS} AND document_id = @documentId`,
@@ -124,7 +116,8 @@ export class SqliteVectorStore implements VectorStore {
     this.updateEmbedding = db.prepare(
       `UPDATE document_chunks
        SET embedding = @embedding, embedding_model = @model, embedding_dim = @dimension
-       WHERE user_id = @userId AND document_id = @documentId AND chunk_index = @chunkIndex`,
+       WHERE user_id = @userId AND document_id = @documentId AND chunk_index = @chunkIndex
+         AND (@chunkId IS NULL OR id = @chunkId)`,
     );
     this.updateProfile = db.prepare(
       `UPDATE documents SET index_profile = @indexProfile, index_fingerprint = @indexFingerprint
@@ -135,9 +128,11 @@ export class SqliteVectorStore implements VectorStore {
         userId: string,
         documentId: string,
         model: string,
-        encoded: Array<{ chunkIndex: number; embedding: Buffer; dimension: number }>,
+        encoded: Array<{ chunkIndex: number; chunkId: string | null; embedding: Buffer; dimension: number }>,
         profile?: StoredIndexProfile,
+        expectedRevision?: IndexRevision,
       ) => {
+        assertIndexRevision(db, userId, documentId, expectedRevision);
         const stored = this.countChunks.get(userId, documentId)?.count ?? 0;
         if (stored !== encoded.length) {
           throw new Error(`Document has ${stored} chunks but ${encoded.length} embeddings were supplied`);
@@ -151,11 +146,19 @@ export class SqliteVectorStore implements VectorStore {
         if (profile) {
           this.updateProfile.run({ userId, documentId, ...profileColumns(profile) });
         }
+        db.prepare("UPDATE documents SET index_revision = index_revision + 1 WHERE user_id = ? AND id = ?").run(userId, documentId);
       },
     );
   }
 
   async searchSimilar(search: SimilaritySearch): Promise<ChunkMatch[]> {
+    throwIfCancelled();
+    if (this.scanner) {
+      const result = await this.scanner.search(search, operationSignal());
+      throwIfCancelled();
+      this.warnAboutSkippedChunks(search, result.unusable);
+      return result.matches;
+    }
     const params = {
       userId: search.userId,
       embeddingModel: search.embeddingModel,
@@ -163,31 +166,9 @@ export class SqliteVectorStore implements VectorStore {
     };
     const rows = (search.documentId ? this.selectDocumentVectors : this.selectVectors).iterate(params);
 
-    const matches: ChunkMatch[] = [];
-    let unusable = 0;
-
-    for (const row of rows) {
-      if (row.embedding_dim !== search.embedding.length) {
-        unusable += 1;
-        continue;
-      }
-
-      try {
-        const score = cosineSimilarity(search.embedding, decodeVector(row.embedding));
-        if (score >= search.minScore) {
-          matches.push({ chunkId: row.id, documentId: row.document_id, chunkIndex: row.chunk_index, score });
-        }
-      } catch (error) {
-        if (!(error instanceof VectorError)) {
-          throw error;
-        }
-        unusable += 1;
-      }
-    }
-
-    this.warnAboutSkippedChunks(search, unusable);
-
-    return matches.sort(byScore).slice(0, search.limit);
+    const result = scoreVectors(rows, search, throwIfCancelled);
+    this.warnAboutSkippedChunks(search, result.unusable);
+    return result.matches;
   }
 
   async searchLexical(search: LexicalSearch): Promise<ChunkMatch[]> {
@@ -240,14 +221,20 @@ export class SqliteVectorStore implements VectorStore {
     model: string,
     updates: EmbeddingUpdate[],
     profile?: StoredIndexProfile,
+    expectedRevision?: IndexRevision,
   ) {
+    throwIfCancelled();
+    if (new Set(updates.map((update) => update.chunkIndex)).size !== updates.length) {
+      throw new Error("Duplicate chunk positions in embedding updates");
+    }
     // Encoding validates every vector before the transaction starts.
     const encoded = updates.map((update) => ({
       chunkIndex: update.chunkIndex,
+      chunkId: update.chunkId ?? null,
       embedding: encodeVector(update.embedding),
       dimension: update.embedding.length,
     }));
-    this.replaceTransaction(userId, documentId, model, encoded, profile);
+    this.replaceTransaction(userId, documentId, model, encoded, profile, expectedRevision);
   }
 
   async deleteByDocument(userId: string, documentId: string) {

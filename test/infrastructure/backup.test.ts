@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { IngestDocumentUseCase } from "../../src/application/use-cases/ingest-document.use-case.js";
 import { createBackup } from "../../src/infrastructure/backup/create-backup.js";
 import { BACKUP_FORMAT_VERSION, MANIFEST_FILE, parseManifest } from "../../src/infrastructure/backup/manifest.js";
@@ -130,40 +131,39 @@ describe("backup content", () => {
     }
   });
 
-  it("records a missing original in the manifest instead of failing the backup", async () => {
+  it("fails an incomplete backup by default; partial recovery needs an explicit flag at creation and verification", async () => {
     const stored = (db.prepare("SELECT stored_name AS name FROM documents ORDER BY created_at LIMIT 1").get() as { name: string }).name;
     fs.rmSync(path.join(filesDir, stored));
 
-    const manifest = await backup();
+    await expect(backup()).rejects.toThrow(/Backup is incomplete/);
+    expect(fs.existsSync(backupDir)).toBe(false);
+    const manifest = await createBackup({ db, filesDir, outputDir: backupDir, now: () => NOW, applicationVersion: "1.2.3", allowIncomplete: true });
 
     expect(manifest.missingFiles).toEqual([stored]);
     expect(manifest.counts.files).toBe(1);
+    expect((await verify()).ok).toBe(false);
+    expect((await verifyBackup(backupDir, { recipe, now: () => NOW.getTime(), allowIncomplete: true })).ok).toBe(true);
   });
 
-  it("is consistent while the bot keeps writing: documents, chunks and the full-text index always agree", async () => {
+  it("blocks mutations in another process after the snapshot until originals are copied, then releases the barrier", async () => {
     const writer = openDatabase(sqlitePath, { legacyEmbeddingModel: "test-model" });
-    let stop = false;
-    const writing = (async () => {
-      for (let i = 0; !stop && i < 200; i += 1) {
-        writer.transaction(() => {
-          writer.prepare("INSERT INTO documents (id, user_id, file_name, stored_name, mime_type, file_size, text_length, created_at) VALUES (?, 'w', 'w.txt', ?, 'text/plain', 1, 1, '2026-01-01')").run(`w${i}`, `w${i}.txt`);
-          writer.prepare("INSERT INTO document_chunks (id, document_id, user_id, chunk_index, content, embedding, embedding_model, embedding_dim, created_at) VALUES (?, ?, 'w', 0, 'streaming text', x'0000803f', 'test-model', 1, '2026-01-01')").run(`c${i}`, `w${i}`);
-        })();
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-    })();
-
-    await backup();
-    stop = true;
-    await writing;
-    writer.close();
-
-    const copy = new Database(path.join(backupDir, "app.db"), { readonly: true });
-    const counts = copy.prepare("SELECT (SELECT COUNT(*) FROM documents d WHERE d.user_id = 'w') AS docs, (SELECT COUNT(*) FROM document_chunks WHERE user_id = 'w') AS chunks, (SELECT COUNT(*) FROM chunk_fts_docsize) AS indexed, (SELECT COUNT(*) FROM document_chunks) AS all_chunks").get() as { docs: number; chunks: number; indexed: number; all_chunks: number };
-    expect(copy.pragma("quick_check", { simple: true })).toBe("ok");
-    expect(counts.docs).toBe(counts.chunks); // a document and its chunk were committed together, so they are in the snapshot together
-    expect(counts.indexed).toBe(counts.all_chunks);
-    copy.close();
+    writer.pragma("busy_timeout = 1");
+    const actualBackup = db.backup.bind(db);
+    const spy = vi.spyOn(db, "backup").mockImplementation(async (...args) => {
+      const result = await actualBackup(...args);
+      const output = execFileSync(process.execPath, ["-e", "const Database=require('better-sqlite3');const db=new Database(process.argv[1]);db.pragma('busy_timeout=20');try{db.prepare('DELETE FROM documents').run();console.log('deleted');}catch(e){console.log(e.code);}finally{db.close();}", sqlitePath], { cwd: process.cwd(), encoding: "utf8" });
+      expect(output.trim()).toBe("SQLITE_BUSY");
+      expect(writer.prepare("SELECT COUNT(*) AS n FROM documents").get()).toEqual({ n: 2 });
+      return result;
+    });
+    try {
+      await backup();
+      expect((await verify()).ok).toBe(true);
+      expect(writer.prepare("DELETE FROM documents").run().changes).toBe(2);
+    } finally {
+      spy.mockRestore();
+      writer.close();
+    }
   });
 });
 

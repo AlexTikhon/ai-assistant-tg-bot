@@ -34,16 +34,19 @@ export class RechunkDocumentUseCase {
   async execute(userId: string, documentId: string): Promise<{ chunksCount: number }> {
     const { documents, files, extractor, embeddings, options } = this.deps;
 
-    const document = await documents.findById(userId, documentId);
-    if (!document) {
+    const snapshot = await documents.readIndexSnapshot(userId, documentId);
+    if (!snapshot) {
       throw new NotFoundError();
     }
+    const { document, revision } = snapshot;
 
     const data = await files.read(document.storedName);
+    const maxChunksPerUser = options.maxChunksPerUser ?? 10_000;
+    const remainingChunks = maxChunksPerUser - await documents.countChunksForUser(userId) + snapshot.chunks.length;
     const prepared = await prepareIndex(
       { extractor, embeddings },
       { fileName: document.fileName, mimeType: document.mimeType, data },
-      options,
+      { ...options, maxChunksPerUser, remainingChunks },
     );
 
     const rebuiltAt = new Date().toISOString();
@@ -52,6 +55,8 @@ export class RechunkDocumentUseCase {
       indexProfile: prepared.profile,
       textLength: prepared.textLength,
       updatedAt: rebuiltAt,
+      expectedRevision: revision,
+      maxChunksPerUser,
     });
 
     log.info(

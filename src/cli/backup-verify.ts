@@ -23,6 +23,7 @@ async function main() {
   const result = await verifyBackup(path.resolve(command.directory), {
     recipe: { embeddingModel: config.openai.embeddingsModel, ...config.chunking },
     now: Date.now,
+    allowIncomplete: command.allowIncomplete,
   });
   console.log(formatVerification(result));
   return result.ok ? 0 : 1;

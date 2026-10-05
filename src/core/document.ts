@@ -32,6 +32,8 @@ export type DocumentRecord = {
   contentHash?: string | null;
   /** 1 for a new document; +1 for every explicit replacement of its content. Absent on input means 1. */
   documentVersion?: number;
+  /** Incremented whenever the content, chunk layout or embeddings change. */
+  indexRevision?: number;
   /** When the content or the index was last rebuilt (replacement, re-chunk). null/absent: never since it was created. */
   updatedAt?: string | null;
   /** Content hash before the last replacement; null when the document was never replaced. */

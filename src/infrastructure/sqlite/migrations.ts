@@ -350,6 +350,13 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    name: "fence index publication against concurrent content and index changes",
+    up(db) {
+      db.exec("ALTER TABLE documents ADD COLUMN index_revision INTEGER NOT NULL DEFAULT 1 CHECK (index_revision > 0)");
+    },
+  },
 ];
 
 /** What in the existing data the version-9 constraints would reject, described for the operator (counts and opaque ids only). */

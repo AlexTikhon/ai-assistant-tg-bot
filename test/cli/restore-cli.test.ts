@@ -5,6 +5,10 @@ import { RestoreError } from "../../src/infrastructure/backup/restore-backup.js"
 import type { RestoreReport } from "../../src/infrastructure/backup/restore-backup.js";
 
 describe("parseRestoreArgs", () => {
+  it("requires explicit opt-in to restore an incomplete backup", () => {
+    expect(parseRestoreArgs(["--from", "b", "--allow-incomplete"])).toMatchObject({ kind: "run", from: "b", allowIncomplete: true });
+  });
+
   it("requires --from and is not destructive by default", () => {
     expect(parseRestoreArgs(["--from", "backups/b1"])).toEqual({ kind: "run", from: "backups/b1", target: undefined, replaceExisting: false, discardPrevious: false, dryRun: false });
   });

@@ -27,6 +27,7 @@ type VerifyOptions = {
   /** The recipe a current index means; only used to point out stale documents. */
   recipe: Omit<ActiveRecipe, "embeddingDimension">;
   now: () => number;
+  allowIncomplete?: boolean;
 };
 
 /**
@@ -103,7 +104,8 @@ export async function verifyBackup(directory: string, options: VerifyOptions): P
     problems.push(`The manifest counts ${manifest.counts.files} files but lists ${manifest.files.length}.`);
   }
   for (const name of manifest.missingFiles) {
-    warnings.push(`${name} was already missing from storage when the backup was made.`);
+    const message = `${name} is missing: this backup cannot recover every original file.`;
+    (options.allowIncomplete ? warnings : problems).push(message);
   }
   for (const entry of await fs.readdir(filesPath).catch(() => [] as string[])) {
     if (!known.has(entry)) {
@@ -181,7 +183,7 @@ export async function verifyBackup(directory: string, options: VerifyOptions): P
 
       for (const issue of integrity.issues) {
         if (issue.severity === "error" && issue.code === "missing-file" && issue.documentId && missingDocumentIds.has(issue.documentId)) {
-          continue; // already reported as a warning above
+          continue; // already reported above, as an error unless partial recovery was explicitly requested
         }
         if (issue.severity === "error") {
           problems.push(`${issue.code}: ${issue.message}`);

@@ -2,7 +2,7 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { describe, expect, it, vi } from "vitest";
 import { OpenAIChatModel } from "../../src/infrastructure/openai/openai-chat-model.js";
-import { OpenAIEmbeddingsProvider } from "../../src/infrastructure/openai/openai-embeddings.js";
+import { createOpenAIEmbeddings, OpenAIEmbeddingsProvider } from "../../src/infrastructure/openai/openai-embeddings.js";
 import { OpenAISpeechToText } from "../../src/infrastructure/openai/openai-speech-to-text.js";
 import { readTextContent } from "../../src/infrastructure/openai/response-text.js";
 import { ExternalServiceError } from "../../src/shared/errors.js";
@@ -110,6 +110,35 @@ describe("OpenAIChatModel", () => {
 });
 
 describe("OpenAIEmbeddingsProvider", () => {
+  it("forwards cancellation to the SDK request and never starts the next paid batch", async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    let requestSignal: AbortSignal | null | undefined;
+    const fetchImpl = vi.fn((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      requestSignal = init?.signal;
+      requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+      started();
+    }));
+    const provider = createOpenAIEmbeddings({ apiKey: "test", model: "test", timeoutMs: 1000, fetchImpl: fetchImpl as typeof fetch });
+    const reason = new Error("cancelled");
+    const result = provider.embedDocuments(Array.from({ length: provider.batchSize! + 1 }, () => "cat"), { signal: controller.signal });
+    const rejected = expect(result).rejects.toBe(reason);
+    await ready;
+    controller.abort(reason);
+    await rejected;
+    expect(requestSignal?.aborted).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores input order from SDK response indices and refuses incomplete responses", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ data: [{ index: 1, embedding: [0, 1] }, { index: 0, embedding: [1, 0] }] }));
+    const provider = createOpenAIEmbeddings({ apiKey: "test", model: "test", timeoutMs: 1000, fetchImpl: fetchImpl as typeof fetch });
+    expect(await provider.embedDocuments(["cat", "dog"])).toEqual([[1, 0], [0, 1]]);
+    fetchImpl.mockImplementationOnce(async () => Response.json({ data: [{ index: 0, embedding: [1, 0] }] }));
+    await expect(provider.embedDocuments(["cat", "dog"])).rejects.toBeInstanceOf(ExternalServiceError);
+  });
+
   it("exposes its model, skips empty batches and wraps provider errors", async () => {
     const client = {
       embedDocuments: vi.fn(async () => [[1, 2]]),

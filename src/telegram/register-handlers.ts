@@ -21,8 +21,10 @@ import { startHandler } from "./handlers/start.handler.js";
 import { createSummaryHandler } from "./handlers/summary.handler.js";
 import { createUploadHandler } from "./handlers/upload.handler.js";
 import { createVoiceHandler } from "./handlers/voice.handler.js";
-import { errorBoundary, logUnhandledError, requestContext, requestLogger } from "./middleware.js";
+import { errorBoundary, logUnhandledError, privateChatOnly, requestContext, requestLogger } from "./middleware.js";
 import { createRateLimitMiddleware } from "./rate-limit.js";
+import { Operations } from "../shared/operation.js";
+import { createOperationMiddleware } from "./operation.js";
 
 export type TelegramDependencies = {
   ingestDocument: IngestDocumentUseCase;
@@ -38,11 +40,12 @@ export type TelegramDependencies = {
   rateLimiter: RateLimiter;
   /** When present, answers get thumbs-up/down buttons and their presses are recorded. Off by default. */
   feedback?: RecordFeedbackUseCase;
+  operations?: Operations;
 };
 
 /** Routes Telegram updates to handlers. Contains no business logic and creates no dependencies. */
-export function registerHandlers(bot: Telegraf, deps: TelegramDependencies) {
-  bot.use(requestContext, requestLogger, errorBoundary);
+export function registerHandlers(bot: Telegraf, deps: TelegramDependencies, timeoutMs = 300_000) {
+  bot.use(requestContext, requestLogger, errorBoundary, privateChatOnly, createOperationMiddleware(deps.operations ?? new Operations(), timeoutMs));
   bot.catch(logUnhandledError);
 
   // Only handlers that cost OpenAI money are limited; /list, /delete and /help stay free.

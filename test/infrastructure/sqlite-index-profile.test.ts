@@ -265,6 +265,7 @@ describe("migration to schema v5", () => {
       DROP INDEX idx_documents_user_hash;
       ALTER TABLE documents DROP COLUMN content_hash;
       ALTER TABLE documents DROP COLUMN document_version;
+      ALTER TABLE documents DROP COLUMN index_revision;
       ALTER TABLE documents DROP COLUMN updated_at;
       ALTER TABLE documents DROP COLUMN previous_content_hash;
       ALTER TABLE documents DROP COLUMN index_profile;
@@ -331,6 +332,7 @@ describe("migration to schema v6: section paths and page labels", () => {
       ALTER TABLE documents DROP COLUMN updated_at;
       ALTER TABLE documents DROP COLUMN previous_content_hash;
       ALTER TABLE document_chunks DROP COLUMN section_path;
+      ALTER TABLE documents DROP COLUMN index_revision;
       ALTER TABLE document_chunks DROP COLUMN page_label_start;
       ALTER TABLE document_chunks DROP COLUMN page_label_end;
       PRAGMA user_version = 5;

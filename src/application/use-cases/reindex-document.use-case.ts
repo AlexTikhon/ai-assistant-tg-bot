@@ -5,6 +5,7 @@ import type { DocumentRepository } from "../ports/document-repository.js";
 import type { EmbeddingsProvider } from "../ports/embeddings-provider.js";
 import type { VectorStore } from "../ports/vector-store.js";
 import { ensureEmbeddingBatch } from "../validate-embeddings.js";
+import { operationSignal, operationStep } from "../../shared/operation.js";
 
 type Dependencies = {
   documents: DocumentRepository;
@@ -28,17 +29,17 @@ export class ReindexDocumentUseCase {
   async execute(userId: string, documentId: string): Promise<{ chunksCount: number }> {
     const { documents, vectorStore, embeddings } = this.deps;
 
-    const document = await documents.findById(userId, documentId);
-    if (!document) {
+    const snapshot = await documents.readIndexSnapshot(userId, documentId);
+    if (!snapshot) {
       throw new NotFoundError();
     }
 
-    const texts = await vectorStore.listByDocument(userId, documentId);
+    const { document, chunks: texts, revision } = snapshot;
     if (texts.length === 0) {
       return { chunksCount: 0 };
     }
 
-    const vectors = await embeddings.embedDocuments(texts.map((text) => text.content));
+    const vectors = await operationStep(() => embeddings.embedDocuments(texts.map((text) => text.content), { signal: operationSignal() }));
     ensureEmbeddingBatch(vectors, texts.length);
 
     // Only the embedding half of the recipe changes; chunk size, overlap and extractor are carried over.
@@ -48,8 +49,9 @@ export class ReindexDocumentUseCase {
       userId,
       documentId,
       embeddings.model,
-      texts.map((text, index) => ({ chunkIndex: text.chunkIndex, embedding: vectors[index] })),
+      texts.map((text, index) => ({ chunkIndex: text.chunkIndex, chunkId: text.chunkId, embedding: vectors[index] })),
       { ...recorded, embeddingModel: embeddings.model, embeddingDimension: vectors[0].length },
+      revision,
     );
 
     log.info({ userId, documentId, chunks: texts.length, embeddingModel: embeddings.model }, "Document re-indexed");

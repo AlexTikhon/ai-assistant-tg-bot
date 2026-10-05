@@ -10,6 +10,7 @@ import type { HybridRetriever, RetrievalResult, RetrievalTrace } from "../hybrid
 import type { AnswerOutcomes, ConfidenceOutcome } from "../ports/answer-outcomes.js";
 import { buildAnswerMessages } from "../prompts/answer-question.prompt.js";
 import type { ChatModel } from "../ports/chat-model.js";
+import { operationSignal, operationStep } from "../../shared/operation.js";
 
 export const MAX_QUESTION_CHARS = 2000;
 
@@ -89,7 +90,7 @@ export class AnswerQuestionUseCase {
     }
 
     const generationStart = performance.now();
-    const generated = await chatModel.complete(buildAnswerMessages(question, chunks));
+    const generated = await operationStep(() => chatModel.complete(buildAnswerMessages(question, chunks), { signal: operationSignal() }));
     const generationMs = elapsedSince(generationStart);
 
     // Only checks that [n] points at one of the excerpts the model was shown - not that it is right.

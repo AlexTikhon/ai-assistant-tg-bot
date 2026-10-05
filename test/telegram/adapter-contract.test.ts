@@ -401,3 +401,54 @@ describe("confidence mode", () => {
     expect(enforce.chatCalls).toBe(0);
   });
 });
+
+describe("private delivery and cancellation", () => {
+  it.each(["group", "supergroup"] as const)("refuses document operations in a %s before reading or calling providers", async (type) => {
+    const id = await upload("private-salary.md");
+    const embeddedBefore = providers.embeddings.calls;
+    calls.length = 0;
+    for (const command of ["/list", `/doc ${id}`, `/summary ${id}`, "/ask When do backups run?", `/delete ${id}`]) {
+      const update = textUpdate(command);
+      await bot.handleUpdate({ ...update, message: { ...update.message, chat: { id: -100123, type, title: "Shared" } } } as never);
+    }
+    const uploadUpdate = documentUpdate("new.txt", Buffer.from("private content"), { caption: `/replace ${id}` });
+    await bot.handleUpdate({ ...uploadUpdate, message: { ...uploadUpdate.message, chat: { id: -100123, type, title: "Shared" } } } as never);
+    expect(providers.embeddings.calls).toBe(embeddedBefore);
+    expect(providers.chatModel.calls).toHaveLength(0);
+    expect(calls.some((call) => call.method === "getFile")).toBe(false);
+    expect(replies()).toHaveLength(6);
+    for (const reply of replies()) expect(reply).toBe("Please open a private chat with me to use your documents.");
+    await send(textUpdate("/list"));
+    expect(lastReply()).toContain("private-salary.md");
+  });
+
+  it("rejects callbacks in shared chats without executing feedback or editing their message", async () => {
+    app.close(); start({}, { FEEDBACK_BUTTONS: "true" });
+    await bot.handleUpdate({ update_id: ++updateCounter, callback_query: {
+      id: "callback", from: sender(42), chat_instance: "group", data: "fb:g:deadbeef",
+      message: { message_id: 1, date: 1, chat: { id: -100123, type: "supergroup", title: "Shared" }, text: "old reply" },
+    } } as never);
+    expect(calls.map((call) => call.method)).toEqual(["answerCallbackQuery"]);
+    expect(calls[0].payload.text).toContain("private chat");
+  });
+
+  it("sends one deadline response and no late answer when a provider ignores cancellation", async () => {
+    app.close();
+    let release!: (value: string) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const result = new Promise<string>((resolve) => { release = resolve; });
+    let signal: AbortSignal | undefined;
+    start({ chatModel: { complete: async (_messages, options) => { signal = options?.signal; entered(); return result; } } }, { HANDLER_TIMEOUT_MS: "300" });
+    await upload(); calls.length = 0;
+    const pending = send(textUpdate("When does the nightly backup run?"));
+    await started; await pending;
+    expect(signal?.aborted).toBe(true);
+    expect(replies()).toHaveLength(1);
+    expect(lastReply()).toContain("cancelled");
+    release("late answer [1]");
+    await app.drain();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(replies()).toHaveLength(1);
+  });
+});

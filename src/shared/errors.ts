@@ -29,6 +29,12 @@ export class NotFoundError extends AppError {
   }
 }
 
+export class IndexChangedError extends AppError {
+  constructor() {
+    super("The document changed while its index was being prepared. Please retry.", "INDEX_CHANGED");
+  }
+}
+
 /** The application cannot start: which stage failed ("database": open/migrate, "storage": the data directory). */
 export class StartupError extends Error {
   constructor(

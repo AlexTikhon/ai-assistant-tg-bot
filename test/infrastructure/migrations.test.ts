@@ -263,6 +263,19 @@ describe("migrations 3 and 4: binary vectors and FTS5", () => {
 });
 
 describe("existing vector-only data after the upgrade", () => {
+  it("upgrades schema 9 with an initial index revision without changing documents or vectors", () => {
+    const old = openDatabase(dbPath, { legacyEmbeddingModel: "m" });
+    old.exec("INSERT INTO documents(id,user_id,file_name,stored_name,file_size,text_length,summary,created_at) VALUES('d','u','a.txt','a.txt',3,3,'cached','2026-10-05')");
+    old.exec("INSERT INTO document_chunks(id,document_id,user_id,chunk_index,content,embedding,embedding_model,embedding_dim,created_at) VALUES('c','d','u',0,'cat',x'0000803f','m',1,'2026-10-05')");
+    old.exec("ALTER TABLE documents DROP COLUMN index_revision; PRAGMA user_version=9");
+    old.close();
+    const upgraded = openDatabase(dbPath, { legacyEmbeddingModel: "m" });
+    try {
+      expect(upgraded.prepare("SELECT index_revision, document_version, summary FROM documents").get()).toEqual({ index_revision: 1, document_version: 1, summary: "cached" });
+      expect(upgraded.prepare("SELECT content, hex(embedding) AS vector FROM document_chunks").get()).toEqual({ content: "cat", vector: "0000803F" });
+      expect(upgraded.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+    } finally { upgraded.close(); }
+  });
   it("stays searchable semantically with the model it was embedded with, and by keywords", async () => {
     createVersion2Database();
     const db = openDatabase(dbPath, { legacyEmbeddingModel: "ignored" });

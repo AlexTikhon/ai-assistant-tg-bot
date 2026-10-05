@@ -7,6 +7,20 @@ const log = logger.child({ component: "telegram" });
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong while processing your request.";
 
+/** Ownership identifies the sender; it does not authorize disclosure to a shared chat. */
+export const privateChatOnly: MiddlewareFn<Context> = async (ctx, next) => {
+  if (ctx.chat?.type === "private") {
+    await next();
+    return;
+  }
+  const message = "Please open a private chat with me to use your documents.";
+  if (ctx.callbackQuery) {
+    await ctx.answerCbQuery(message);
+  } else if (ctx.chat) {
+    await ctx.reply(message);
+  }
+};
+
 /**
  * Gives every update a short opaque request id for the whole time it is handled, so all log lines of one update
  * (handler, retrieval, generation, ingestion) can be correlated. Never shown to users in normal replies.

@@ -40,6 +40,8 @@ import { logger } from "./shared/logger.js";
 import { RateLimiter } from "./shared/rate-limiter.js";
 import { APPLICATION_VERSION } from "./shared/version.js";
 import { createBot } from "./telegram/bot.js";
+import { Operations } from "./shared/operation.js";
+import { SemanticScanner } from "./infrastructure/sqlite/semantic-scanner.js";
 
 export type Application = {
   bot: Telegraf;
@@ -52,6 +54,8 @@ export type Application = {
   startupCheck(): Promise<void>;
   /** Releases resources held by the infrastructure (the SQLite connection). */
   close(): void;
+  /** Cancels new/in-flight updates and waits for actual work before releasing storage. */
+  drain(): Promise<void>;
 };
 
 export type IntegrityTool = {
@@ -150,6 +154,8 @@ export type Core = {
   outcomes: InMemoryAnswerOutcomes;
   readiness: Application["readiness"];
   startupCheck(): Promise<void>;
+  /** Stops and joins semantic worker jobs. Application shutdown calls this after draining updates. */
+  drain(): Promise<void>;
   close(): void;
 };
 
@@ -163,6 +169,8 @@ export function createCore(config: CoreConfig, providers: Providers): Core {
   const { db, documents, vectorStore, maintenance } = createStorage({ storage: config.storage, embeddings });
 
   try {
+    const scanner = new SemanticScanner(config.storage.sqlitePath);
+    const queryStore = new SqliteVectorStore(db, scanner);
     const files = new LocalFileStorage(config.storage.filesDir);
     const extractor = new FileTextExtractor({ maxPdfPages: config.limits.maxPdfPages });
 
@@ -175,7 +183,7 @@ export function createCore(config: CoreConfig, providers: Providers): Core {
     const overview = { documents, maintenance, files, recipe };
     const outcomes = new InMemoryAnswerOutcomes();
     const answerQuestion = new AnswerQuestionUseCase({
-      retriever: new HybridRetriever({ embeddings, vectorStore, options: config.retrieval }),
+      retriever: new HybridRetriever({ embeddings, vectorStore: queryStore, options: config.retrieval }),
       chatModel,
       outcomes,
       options: { logQuestions: config.logQuestions, ragDebug: config.ragDebug },
@@ -202,7 +210,8 @@ export function createCore(config: CoreConfig, providers: Providers): Core {
         confidenceMode: config.retrieval.confidenceMode,
       },
       startupCheck: async () => void (await runStartupCheck({ store: new SqliteIntegrityStore(db), maintenance, files, recipe, now: Date.now, log: logger })),
-      close: () => db.close(),
+      drain: () => scanner.close(),
+      close: () => { void scanner.close(); db.close(); },
     };
   } catch (error) {
     db.close();
@@ -220,6 +229,7 @@ export function createApplication(
   telegram?: Parameters<typeof createBot>[3],
 ): Application {
   const core = createCore(config, providers);
+  const operations = new Operations();
 
   try {
     const bot = createBot(config.telegram.botToken, config.telegram.handlerTimeoutMs, {
@@ -228,9 +238,13 @@ export function createApplication(
       downloadLimits: { maxBytes: config.ingestion.maxUploadBytes, timeoutMs: config.ingestion.downloadTimeoutMs },
       rateLimiter: new RateLimiter({ limit: config.rateLimit.requests, windowMs: config.rateLimit.windowMs }),
       feedback: config.feedbackButtons ? new RecordFeedbackUseCase({ store: new SqliteFeedbackStore(core.db), outcomes: core.outcomes }) : undefined,
+      operations,
     }, telegram);
 
-    return { bot, readiness: core.readiness, startupCheck: core.startupCheck, close: core.close };
+    return {
+      bot, readiness: core.readiness, startupCheck: core.startupCheck, close: core.close,
+      drain: async () => { await operations.shutdown(); await core.drain(); },
+    };
   } catch (error) {
     core.close();
     throw error;
@@ -263,7 +277,7 @@ export function createReindexTool(config: ToolConfig, credentials: { openaiApiKe
         files: new LocalFileStorage(config.storage.filesDir),
         extractor: new FileTextExtractor({ maxPdfPages: config.limits.maxPdfPages }),
         embeddings,
-        options: { ...config.chunking, maxChunksPerDocument: config.limits.maxChunksPerDocument },
+        options: { ...config.chunking, maxChunksPerDocument: config.limits.maxChunksPerDocument, maxChunksPerUser: config.limits.maxChunksPerUser },
       }),
     }),
     close: () => db.close(),

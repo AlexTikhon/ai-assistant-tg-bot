@@ -5,6 +5,7 @@ import type { TextProblem } from "../../core/file-validation.js";
 import type { ExtractedDocument } from "../../core/pages.js";
 import { ValidationError } from "../../shared/errors.js";
 import { getFileExtension } from "../../shared/utils/path.js";
+import type { OperationOptions } from "../../shared/operation.js";
 
 /** More pages than this is refused before any text is extracted (see MAX_PDF_PAGES in the configuration). */
 export const DEFAULT_MAX_PDF_PAGES = 1000;
@@ -34,14 +35,15 @@ export class FileTextExtractor implements DocumentTextExtractor {
     this.maxPdfPages = options.maxPdfPages ?? DEFAULT_MAX_PDF_PAGES;
   }
 
-  async extract(input: ExtractionInput): Promise<ExtractedDocument> {
+  async extract(input: ExtractionInput, options: OperationOptions = {}): Promise<ExtractedDocument> {
+    options.signal?.throwIfAborted();
     const extension = getFileExtension(input.fileName);
 
     if (extension === ".pdf") {
       if (!hasPdfSignature(input.data)) {
         throw new ValidationError("This file is named like a PDF but is not a PDF document.");
       }
-      return extractPdf(input.data, this.maxPdfPages);
+      return extractPdf(input.data, this.maxPdfPages, options.signal);
     }
 
     if (extension === ".md" || extension === ".txt") {
@@ -56,20 +58,25 @@ export class FileTextExtractor implements DocumentTextExtractor {
   }
 }
 
-async function extractPdf(data: Buffer, maxPages: number): Promise<ExtractedDocument> {
+async function extractPdf(data: Buffer, maxPages: number, signal?: AbortSignal): Promise<ExtractedDocument> {
   const parser = new PDFParse({ data: new Uint8Array(data) });
+  const cancel = () => { void parser.destroy().catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
 
   try {
     // The page count is read from the document structure first, so a PDF of thousands of (possibly empty) pages costs nothing.
     const { total } = await parser.getInfo();
+    signal?.throwIfAborted();
     if (total > maxPages) {
       throw new ValidationError(`This PDF has ${total} pages; the limit is ${maxPages}. Try splitting it.`);
     }
 
     // pageJoiner "": by default pdf-parse appends "-- n of m --" to every page, which would otherwise be indexed as content.
     const result = await parser.getText({ pageJoiner: "" });
+    signal?.throwIfAborted();
     return { text: result.text, pages: result.pages.map((page) => ({ pageNumber: page.num, text: page.text })) };
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof ValidationError) {
       throw error;
     }
@@ -77,6 +84,7 @@ async function extractPdf(data: Buffer, maxPages: number): Promise<ExtractedDocu
       cause: error,
     });
   } finally {
+    signal?.removeEventListener("abort", cancel);
     await parser.destroy().catch(() => undefined);
   }
 }

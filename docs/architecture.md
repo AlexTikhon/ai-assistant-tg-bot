@@ -112,9 +112,13 @@ test/                   Vitest suites using fakes for the ports and in-memory SQ
 ## Request flow
 
 1. Telegraf receives an update; `requestContext` gives it a short opaque request id (8 random hex characters, never derived from user content) that the logger adds to every line logged while it is handled - handler, retrieval, generation, ingestion, feedback. `requestLogger` and `errorBoundary` wrap every handler.
-2. Handlers that call OpenAI (`/ask`, plain text, `/summary`, uploads, voice) first pass the per-user rate limit.
+2. `privateChatOnly` refuses shared chats and callbacks before document access or provider calls. Private updates run within an `Operations` deadline scope; handlers that call OpenAI (`/ask`, plain text, `/summary`, uploads, voice) also pass the per-user rate limit.
 3. A handler reads Telegram specifics (user id, command arguments, file ids), calls one use case, and formats the result as plain text, split into several messages if it exceeds Telegram's limit.
 4. `errorBoundary` replies with the message of an `AppError` (written for users) or a generic message for anything unexpected. Technical details are logged, never sent.
+
+`HANDLER_TIMEOUT_MS` is an application deadline. Its `AbortSignal` follows the request through downloads, extraction and providers; embedding batches and summary calls check it between requests. SQLite mutations check cancellation immediately before publishing. A timeout sends one safe response and refuses later handler replies. Shutdown aborts updates and joins middleware, adapter cleanup and any file write/compensation already in progress before closing storage. Synchronous parsing/chunking still requires the existing input bounds; JavaScript timers cannot interrupt synchronous CPU work.
+
+Semantic scanning runs in one worker thread against a read-only SQLite connection, with at most 16 queued/running jobs. Cancelled jobs remain counted until the worker acknowledges them. Scoring still costs O(ND), but top-K selection retains O(K) candidates and costs O(N log K); it does not sort or retain every qualifying match. Ranking and user/model/document filters match the in-process implementation used by evaluation fixtures. The `VectorStore` port remains the seam for ANN search if corpus size outgrows these bounds.
 
 ## Document lifecycle
 
@@ -306,6 +310,8 @@ Query-time settings (`RETRIEVAL_*`, `MIN_SIMILARITY_SCORE`) are not part of it: 
 
 Documents indexed before profiles existed have *unknown* chunk size/overlap; unknown is never reported as a change. The bot logs one warning at startup with the counts; it never re-indexes by itself. Re-chunking reads the stored file, extracts, splits, embeds, validates, and replaces chunks + profile in **one transaction**; any failure leaves the previous index untouched.
 
+Migration 10 adds `documents.index_revision`, initialized to 1. Re-embedding and re-chunking read metadata, stable chunk ids and both revisions in one SQLite snapshot. Their publishing transaction checks `document_version` and `index_revision` before writing; replacement, re-chunking and re-embedding increment the index revision. A concurrent change or deletion rejects publication instead of applying vectors to a newer layout. Re-embedding also matches each update to its original chunk id.
+
 ```bash
 npm run reindex -- --dry-run              # why is each document stale? No OpenAI calls, no API key
 npm run reindex                           # re-embed documents with outdated embeddings
@@ -323,6 +329,7 @@ Documents are processed one at a time; one failure is recorded and the run conti
 | `MAX_DOCUMENTS_PER_USER` | 100 | Upload rejected with a clear message before any extraction or embedding |
 | `MAX_STORAGE_BYTES_PER_USER` | 200 MB | Sum of a user's original file sizes plus the new file |
 | `MAX_CHUNKS_PER_DOCUMENT` | 2000 | Checked after splitting, before paying for embeddings; also applies when re-chunking and replacing |
+| `MAX_CHUNKS_PER_USER` | 10000 | Total across the user's documents; checked before embeddings and again in the publishing transaction, crediting the old chunks on replacement/re-chunking |
 | `MAX_PDF_PAGES` | 1000 | A PDF with more pages is refused before any text is extracted (a PDF of thousands of near-empty pages is small but slow to parse) |
 | Markdown headings with section labels | 5000 | Above this no section labels are produced (the document is indexed and cited by chunk number): labelling compares every chunk with every heading, and 480,000 headings in 2 MB took ~23 s of uninterrupted CPU |
 | `RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_MS` | 10 per 60 s | Sliding window per Telegram user, in memory, for questions, summaries, uploads and voice messages |

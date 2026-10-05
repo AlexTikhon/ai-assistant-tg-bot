@@ -1,4 +1,4 @@
-import type { ChunkRecord, DocumentRecord } from "../../core/document.js";
+import type { ChunkRecord, ChunkText, DocumentRecord } from "../../core/document.js";
 import type { StoredIndexProfile } from "../../core/index-profile.js";
 
 /** Persistence of document metadata. Every lookup is scoped to the owning user. */
@@ -8,6 +8,14 @@ export type UserUsage = {
   totalBytes: number;
 };
 
+export type IndexRevision = { documentVersion: number; indexRevision: number };
+/** Document metadata and chunk text read from the same database snapshot. */
+export type DocumentIndexSnapshot = {
+  document: DocumentRecord;
+  chunks: Array<ChunkText & { chunkId: string }>;
+  revision: IndexRevision;
+};
+
 /** Everything a re-chunk produces; applied to an existing document in one step. */
 export type ChunkReplacement = {
   chunks: ChunkRecord[];
@@ -15,10 +23,13 @@ export type ChunkReplacement = {
   textLength: number;
   /** When the index was rebuilt; recorded as the document's `updatedAt`. */
   updatedAt?: string;
+  expectedRevision?: IndexRevision;
+  maxChunksPerUser?: number;
 };
 
 /** A prepared new version of an existing document: new file, new content identity, complete new index. */
 export type DocumentReplacement = {
+  maxChunksPerUser?: number;
   fileName: string;
   storedName: string;
   mimeType: string;
@@ -38,7 +49,7 @@ export type ReplaceResult = {
 
 export interface DocumentRepository {
   /** Stores the document and all of its chunks atomically: either everything is saved or nothing. */
-  saveWithChunks(document: DocumentRecord, chunks: ChunkRecord[]): Promise<void>;
+  saveWithChunks(document: DocumentRecord, chunks: ChunkRecord[], maxChunksPerUser?: number): Promise<void>;
   /**
    * Swaps *all* chunks of an existing document for new ones, together with its recorded index profile and
    * text length, atomically: after a failure the previous chunks and profile are untouched. The document
@@ -66,10 +77,12 @@ export interface DocumentRepository {
   updateStoredName(userId: string, documentId: string, storedName: string): Promise<boolean>;
   /** Number of chunks currently stored for the user's document (0 when it has none or does not exist). */
   countChunks(userId: string, documentId: string): Promise<number>;
+  countChunksForUser(userId: string): Promise<number>;
   /** How much the user has stored so far (for per-user limits). */
   getUsage(userId: string): Promise<UserUsage>;
   listByUser(userId: string): Promise<DocumentRecord[]>;
   findById(userId: string, documentId: string): Promise<DocumentRecord | null>;
+  readIndexSnapshot(userId: string, documentId: string): Promise<DocumentIndexSnapshot | null>;
   /**
    * Caches a summary. With `expectedVersion` the summary is only saved when the document is still at that
    * version: a summary computed for content that was replaced in the meantime is dropped, never stored.

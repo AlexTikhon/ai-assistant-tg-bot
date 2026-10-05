@@ -22,7 +22,7 @@ function createFakeApplication() {
   };
   const close = vi.fn(() => void events.push("close"));
 
-  return { app: { bot, close } as unknown as Application, bot, close, events, finish: () => finishPolling() };
+  return { app: { bot, close, drain: async () => undefined } as unknown as Application, bot, close, events, finish: () => finishPolling() };
 }
 
 describe("application lifecycle", () => {
@@ -72,6 +72,20 @@ describe("application lifecycle", () => {
 
     await running.shutdown("SIGINT");
 
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("waits for actual middleware work even when polling has already settled", async () => {
+    const { app, close, finish } = createFakeApplication();
+    let release!: () => void;
+    const active = new Promise<void>((resolve) => { release = resolve; });
+    app.drain = () => active;
+    const running = await startApplication(app);
+    finish();
+    const shutdown = running.shutdown("SIGTERM");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(close).not.toHaveBeenCalled();
+    release(); await shutdown;
     expect(close).toHaveBeenCalledOnce();
   });
 });

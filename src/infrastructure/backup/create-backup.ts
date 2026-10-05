@@ -7,7 +7,7 @@ import { APPLICATION_NAME, BACKUP_FORMAT_VERSION, DATABASE_FILE, FILES_DIRECTORY
 import type { BackupManifest } from "./manifest.js";
 
 export type CreateBackupOptions = {
-  /** The live database connection. Read-only is enough; it is never written to. */
+  /** The snapshot connection may be read-only; a separate write barrier needs write access to its database file. */
   db: Database.Database;
   /** Where the original uploads are stored. */
   filesDir: string;
@@ -15,6 +15,8 @@ export type CreateBackupOptions = {
   outputDir: string;
   now: () => Date;
   applicationVersion: string;
+  /** Explicit disaster recovery only: preserve a damaged installation with missing originals. */
+  allowIncomplete?: boolean;
 };
 
 const log = logger.child({ operation: "backup" });
@@ -31,8 +33,8 @@ const log = logger.child({ operation: "backup" });
  *
  * The database is NOT copied as a file: a live database in WAL mode keeps recent commits in a separate -wal
  * file that a plain copy would miss or tear. The backup API reads a point-in-time snapshot through SQLite
- * itself, safely while the bot keeps writing. The files are copied afterwards for exactly the documents
- * of that snapshot; a file that vanished in between (a deletion after the snapshot) is listed as missing.
+ * itself. A separate connection holds BEGIN IMMEDIATE through snapshotting and file copying: document
+ * mutations cannot commit and remove originals while the snapshot still needs them. Reads remain available.
  *
  * On any failure everything this call created is removed again, so a half-written backup never exists.
  */
@@ -50,7 +52,14 @@ export async function createBackup(options: CreateBackupOptions): Promise<Backup
   // A backup holds users' documents: readable by its owner only.
   await ensurePrivateDirectoryAsync(path.join(outputDir, FILES_DIRECTORY));
 
+  let barrier: Database.Database | undefined;
   try {
+    if (db.name === ":memory:" || db.inTransaction) {
+      throw new Error("Backup requires a file database outside an active transaction.");
+    }
+    barrier = new Database(db.name, { fileMustExist: true });
+    barrier.pragma("busy_timeout = 2000");
+    barrier.exec("BEGIN IMMEDIATE");
     const databasePath = path.join(outputDir, DATABASE_FILE);
     await db.backup(databasePath);
     await restrictFileAsync(databasePath);
@@ -82,6 +91,10 @@ export async function createBackup(options: CreateBackupOptions): Promise<Backup
       files.push({ storedName, bytes: (await fs.stat(target)).size, sha256: await hashFile(target) });
     }
 
+    if (missingFiles.length > 0 && !options.allowIncomplete) {
+      throw new Error(`Backup is incomplete: ${missingFiles.length} original files are missing. Use --allow-incomplete only for partial recovery.`);
+    }
+
     const manifest: BackupManifest = {
       formatVersion: BACKUP_FORMAT_VERSION,
       createdAt: options.now().toISOString(),
@@ -104,6 +117,11 @@ export async function createBackup(options: CreateBackupOptions): Promise<Backup
   } catch (error) {
     await removeCreated(outputDir, existed);
     throw error;
+  } finally {
+    if (barrier) {
+      try { if (barrier.inTransaction) barrier.exec("ROLLBACK"); }
+      finally { barrier.close(); }
+    }
   }
 }
 

@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { BACKUP_USAGE, defaultBackupDirectory, formatBackupSummary, formatVerification, parseBackupArgs, parseVerifyArgs, VERIFY_USAGE } from "../../src/cli/backup-cli.js";
 
 describe("parseBackupArgs", () => {
+  it("requires explicit opt-in for incomplete backups and verification", () => {
+    expect(parseBackupArgs(["--allow-incomplete", "--output", "b"])).toMatchObject({ kind: "run", output: "b", allowIncomplete: true });
+    expect(parseVerifyArgs(["b", "--allow-incomplete"])).toMatchObject({ kind: "run", directory: "b", allowIncomplete: true });
+  });
+
   it("--output sets the directory", () => {
     expect(parseBackupArgs(["--output", "./b/one"])).toEqual({ kind: "run", output: "./b/one" });
   });

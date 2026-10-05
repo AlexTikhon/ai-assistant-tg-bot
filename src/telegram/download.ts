@@ -2,6 +2,7 @@ import type { Context } from "telegraf";
 import { ExternalServiceError, ValidationError } from "../shared/errors.js";
 import { HttpStatusError, parseRetryAfter, withRetry } from "../shared/retry.js";
 import type { RetryOptions } from "../shared/retry.js";
+import { operationSignal, operationStep } from "../shared/operation.js";
 
 const DOWNLOAD_FAILED = "I could not download that file from Telegram. Please try again.";
 
@@ -31,11 +32,13 @@ export function tooLargeError(maxBytes: number) {
  */
 export async function downloadTelegramFile(ctx: Context, fileId: string, limits: DownloadLimits, deps: DownloadDependencies = {}) {
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const signal = operationSignal() ?? deps.retry?.signal;
 
   try {
     return await withRetry(async () => {
-      const link = await ctx.telegram.getFileLink(fileId);
-      const response = await fetchImpl(link, { signal: AbortSignal.timeout(limits.timeoutMs) });
+      const link = await operationStep(() => ctx.telegram.getFileLink(fileId), signal);
+      const timeout = AbortSignal.timeout(limits.timeoutMs);
+      const response = await fetchImpl(link, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
 
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
@@ -51,9 +54,10 @@ export async function downloadTelegramFile(ctx: Context, fileId: string, limits:
         throw tooLargeError(limits.maxBytes);
       }
 
-      return await readBody(response, limits.maxBytes);
-    }, deps.retry);
+      return await operationStep(() => readBody(response, limits.maxBytes), signal);
+    }, { ...deps.retry, signal });
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof ValidationError) {
       throw error;
     }

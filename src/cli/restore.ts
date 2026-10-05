@@ -32,6 +32,7 @@ async function main() {
       replaceExisting: command.replaceExisting,
       discardPrevious: command.discardPrevious,
       dryRun: command.dryRun,
+      allowIncomplete: command.allowIncomplete,
       recipe: { embeddingModel: config.openai.embeddingsModel, ...config.chunking },
       legacyEmbeddingModel: config.openai.embeddingsModel,
       now: () => new Date(),

@@ -9,6 +9,7 @@ import type { InfoLog } from "../../shared/logger.js";
 import type { ChatMessage, ChatModel } from "../ports/chat-model.js";
 import type { DocumentRepository } from "../ports/document-repository.js";
 import type { VectorStore } from "../ports/vector-store.js";
+import { operationSignal, operationStep, throwIfCancelled } from "../../shared/operation.js";
 
 export type SummarizeDocumentResult = {
   document: DocumentRecord;
@@ -62,6 +63,7 @@ export class SummarizeDocumentUseCase {
   }
 
   private async summarize(userId: string, documentId: string): Promise<SummarizeDocumentResult> {
+    throwIfCancelled();
     const { documents, vectorStore } = this.deps;
 
     const document = await documents.findById(userId, documentId);
@@ -95,7 +97,7 @@ export class SummarizeDocumentUseCase {
   /** One generation call, counted for the cost log. */
   private generate(calls: { generation: number }, messages: ChatMessage[]) {
     calls.generation += 1;
-    return this.deps.chatModel.complete(messages);
+    return operationStep(() => this.deps.chatModel.complete(messages, { signal: operationSignal() }));
   }
 
   private async summarizeChunks(chunks: ChunkText[], calls: { generation: number }) {

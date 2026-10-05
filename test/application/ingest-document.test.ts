@@ -16,6 +16,7 @@ const options = {
   maxDocumentsPerUser: 10,
   maxStorageBytesPerUser: 1_000_000,
   maxChunksPerDocument: 100,
+  maxChunksPerUser: 10_000,
 };
 
 function createUseCase(documents: DocumentRepository = stores.documents, overrides: Partial<typeof options> = {}) {
@@ -122,6 +123,7 @@ describe("IngestDocumentUseCase", () => {
 
   it("removes the stored file when persisting fails (compensation)", async () => {
     const failingRepository = {
+      countChunksForUser: async () => 0,
       getUsage: async () => ({ documentCount: 0, totalBytes: 0 }),
       findByContentHash: async () => null,
       findUnhashedBySize: async () => [],
@@ -139,6 +141,7 @@ describe("IngestDocumentUseCase", () => {
   it("still reports the original persistence error if file cleanup also fails", async () => {
     files.failOnDelete = true;
     const failingRepository = {
+      countChunksForUser: async () => 0,
       getUsage: async () => ({ documentCount: 0, totalBytes: 0 }),
       findByContentHash: async () => null,
       findUnhashedBySize: async () => [],
@@ -169,6 +172,27 @@ describe("IngestDocumentUseCase", () => {
 });
 
 describe("IngestDocumentUseCase per-user limits", () => {
+  it("bounds total chunks per user before embeddings, isolates quotas, and frees capacity on deletion", async () => {
+    const ingest = createUseCase(stores.documents, { maxChunksPerUser: 1 });
+    const first = await ingest.execute(upload({ text: "cat", fileName: "first.txt" }));
+    embeddings.documentCalls.length = 0;
+    await expect(ingest.execute(upload({ text: "dog", fileName: "second.txt" }))).rejects.toThrow(/total chunk limit/);
+    expect(embeddings.documentCalls).toHaveLength(0);
+    await expect(ingest.execute(upload({ text: "dog", userId: "other" }))).resolves.toMatchObject({ kind: "created" });
+    await stores.documents.delete("user-1", first.documentId);
+    await expect(ingest.execute(upload({ text: "dog" }))).resolves.toMatchObject({ kind: "created" });
+  });
+
+  it("rechecks the aggregate quota atomically at publication and compensates a file on a racing write", async () => {
+    const originalEmbed = embeddings.embedDocuments.bind(embeddings);
+    embeddings.embedDocuments = async (texts) => {
+      await stores.documents.saveWithChunks({ id: "racer", userId: "user-1", fileName: "race.txt", storedName: "race.txt", mimeType: "text/plain", fileSize: 3, textLength: 3, summary: null, createdAt: "2026-10-05" }, [{ id: "race-chunk", documentId: "racer", userId: "user-1", chunkIndex: 0, content: "dog", embedding: [0, 1, 0, 0], embeddingModel: embeddings.model, createdAt: "2026-10-05" }]);
+      return originalEmbed(texts);
+    };
+    await expect(createUseCase(stores.documents, { maxChunksPerUser: 1 }).execute(upload({ text: "cat" }))).rejects.toThrow(/total chunk limit/);
+    expect(files.files.size).toBe(0);
+    expect((await stores.documents.listByUser("user-1")).map((document) => document.id)).toEqual(["racer"]);
+  });
   it("rejects an upload beyond the document limit, before extracting or embedding anything", async () => {
     const useCase = createUseCase(stores.documents, { maxDocumentsPerUser: 2 });
     await useCase.execute(upload({ fileName: "one.txt" }));

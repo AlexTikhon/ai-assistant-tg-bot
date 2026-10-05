@@ -35,10 +35,14 @@ export async function startApplication(app: Application): Promise<RunningApplica
       try {
         // Stops fetching new updates; the polling promise settles after updates in flight are done.
         app.bot.stop(reason);
-        await polling;
+        const settled = await Promise.allSettled([polling, app.drain()]);
+        for (const result of settled) {
+          if (result.status === "rejected") logger.error({ err: result.reason }, "Error draining in-flight work");
+        }
       } catch (err) {
         logger.error({ err }, "Error while stopping the bot");
       } finally {
+        await app.drain();
         clearTimeout(forceExit);
         try {
           app.close();

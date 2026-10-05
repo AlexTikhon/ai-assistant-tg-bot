@@ -65,6 +65,18 @@ beforeEach(() => {
 });
 
 describe("ReplaceDocumentUseCase: success", () => {
+  it("credits the old chunks when replacing at the user quota and rejects growth before embeddings", async () => {
+    const id = await seed("A cat lives here.");
+    const limited = new ReplaceDocumentUseCase({ ...deps(), options: { ...options, maxChunksPerUser: 1 } });
+    expect((await limited.execute(replaceInput(id, "A dog lives here."))).kind).toBe("replaced");
+    const before = await stores.documents.findById("user-1", id);
+    embeddings.documentCalls.length = 0;
+    await expect(limited.execute(replaceInput(id, V2))).rejects.toBeInstanceOf(ValidationError);
+    expect(embeddings.documentCalls).toHaveLength(0);
+    expect(await stores.documents.findById("user-1", id)).toEqual(before);
+    expect(await stores.documents.countChunksForUser("user-1")).toBe(1);
+  });
+
   it("swaps the content of the same document: same id, new version, new index, new file; the old file is removed", async () => {
     const id = await seed();
     const before = await stores.documents.findById("user-1", id);

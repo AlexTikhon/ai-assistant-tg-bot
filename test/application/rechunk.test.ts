@@ -40,7 +40,7 @@ async function ingest(fileName = "pets.txt", text = TEXT, userId = "user-1") {
   return result.documentId;
 }
 
-function createRechunk(overrides: { documents?: DocumentRepository; maxChunksPerDocument?: number; chunkSize?: number } = {}) {
+function createRechunk(overrides: { documents?: DocumentRepository; maxChunksPerDocument?: number; maxChunksPerUser?: number; chunkSize?: number } = {}) {
   return new RechunkDocumentUseCase({
     documents: overrides.documents ?? stores.documents,
     files,
@@ -50,6 +50,7 @@ function createRechunk(overrides: { documents?: DocumentRepository; maxChunksPer
       chunkSize: overrides.chunkSize ?? 100,
       chunkOverlap: 10,
       maxChunksPerDocument: overrides.maxChunksPerDocument ?? 500,
+      maxChunksPerUser: overrides.maxChunksPerUser,
     },
   });
 }
@@ -72,6 +73,15 @@ async function snapshot(documentId: string) {
 }
 
 describe("RechunkDocumentUseCase: success", () => {
+  it("rejects an expansion beyond the user quota before embeddings and preserves the old index", async () => {
+    const documentId = await ingest("short.txt", "A cat lives here. ".repeat(5));
+    const before = await snapshot(documentId);
+    embeddings.documentCalls.length = 0;
+    await expect(createRechunk({ chunkSize: 20, maxChunksPerUser: 1 }).execute("user-1", documentId)).rejects.toBeInstanceOf(ValidationError);
+    expect(embeddings.documentCalls).toHaveLength(0);
+    expect(await snapshot(documentId)).toEqual(before);
+  });
+
   it("re-extracts the stored original, splits it with the current settings and replaces the chunks", async () => {
     const documentId = await ingest();
     const before = chunkRows();

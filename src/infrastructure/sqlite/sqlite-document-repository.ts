@@ -3,6 +3,7 @@ import type {
   ChunkReplacement,
   DocumentReplacement,
   DocumentRepository,
+  DocumentIndexSnapshot,
   ReplaceResult,
   UserUsage,
 } from "../../application/ports/document-repository.js";
@@ -11,6 +12,9 @@ import type { ChunkRecord, DocumentRecord } from "../../core/document.js";
 import { NotFoundError } from "../../shared/errors.js";
 import { prepareChunkInsert } from "./chunk-rows.js";
 import { parseProfileColumn, profileColumns } from "./profile-column.js";
+import { assertIndexRevision } from "./index-revision.js";
+import { assertUserChunkLimit } from "./chunk-limit.js";
+import { throwIfCancelled } from "../../shared/operation.js";
 
 type DocumentRow = {
   id: string;
@@ -25,6 +29,7 @@ type DocumentRow = {
   created_at: string;
   content_hash: string | null;
   document_version: number;
+  index_revision: number;
   updated_at: string | null;
   previous_content_hash: string | null;
 };
@@ -44,6 +49,7 @@ function toDocument(row: DocumentRow): DocumentRecord {
     // A malformed stored hash is treated as unknown rather than trusted.
     contentHash: isContentHash(row.content_hash) ? row.content_hash : null,
     documentVersion: row.document_version,
+    indexRevision: row.index_revision,
     updatedAt: row.updated_at,
     previousContentHash: isContentHash(row.previous_content_hash) ? row.previous_content_hash : null,
   };
@@ -51,6 +57,7 @@ function toDocument(row: DocumentRow): DocumentRecord {
 
 /** SQLite-backed document metadata. Every statement filters by `user_id`. */
 export class SqliteDocumentRepository implements DocumentRepository {
+  private readonly readSnapshot;
   private readonly insertDocument;
   private readonly insertChunk;
   private readonly selectByUser;
@@ -61,6 +68,7 @@ export class SqliteDocumentRepository implements DocumentRepository {
   private readonly updateSummaryStatement;
   private readonly updateHash;
   private readonly countChunkRows;
+  private readonly countUserChunks: (userId: string) => number;
   private readonly updateStoredNameStatement;
   private readonly deleteStatement;
   private readonly saveTransaction;
@@ -70,6 +78,19 @@ export class SqliteDocumentRepository implements DocumentRepository {
   private readonly replaceDocumentTransaction;
 
   constructor(db: Database.Database) {
+    const countUserChunks = db.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM document_chunks WHERE user_id = ?");
+    this.countUserChunks = (userId) => countUserChunks.get(userId)?.count ?? 0;
+    const snapshotChunks = db.prepare<[string, string], DocumentIndexSnapshot["chunks"][number]>(
+      "SELECT id AS chunkId, chunk_index AS chunkIndex, content FROM document_chunks WHERE user_id = ? AND document_id = ? ORDER BY chunk_index",
+    );
+    this.readSnapshot = db.transaction((userId: string, documentId: string): DocumentIndexSnapshot | null => {
+      const row = this.selectById.get(userId, documentId);
+      return row ? {
+        document: toDocument(row),
+        chunks: snapshotChunks.all(userId, documentId),
+        revision: { documentVersion: row.document_version, indexRevision: row.index_revision },
+      } : null;
+    });
     this.insertDocument = db.prepare(`
       INSERT INTO documents (id, user_id, file_name, stored_name, mime_type, file_size, text_length, summary, index_profile, index_fingerprint, created_at,
                              content_hash, document_version, updated_at, previous_content_hash)
@@ -109,19 +130,21 @@ export class SqliteDocumentRepository implements DocumentRepository {
     this.deleteChunksOfDocument = db.prepare("DELETE FROM document_chunks WHERE user_id = ? AND document_id = ?");
     this.updateProfile = db.prepare(
       `UPDATE documents SET text_length = @textLength, index_profile = @indexProfile, index_fingerprint = @indexFingerprint,
-              updated_at = COALESCE(@updatedAt, updated_at)
+              updated_at = COALESCE(@updatedAt, updated_at), index_revision = index_revision + 1
        WHERE user_id = @userId AND id = @documentId`,
     );
     const replaceDocumentRow = db.prepare(
       `UPDATE documents SET file_name = @fileName, stored_name = @storedName, mime_type = @mimeType, file_size = @fileSize,
               text_length = @textLength, summary = NULL, index_profile = @indexProfile, index_fingerprint = @indexFingerprint,
               previous_content_hash = content_hash, content_hash = @contentHash,
-              document_version = document_version + 1, updated_at = @updatedAt
+              document_version = document_version + 1, index_revision = index_revision + 1, updated_at = @updatedAt
        WHERE user_id = @userId AND id = @documentId`,
     );
 
     // The FTS triggers fire per row inside this transaction, so the full-text index follows the swap.
     this.replaceTransaction = db.transaction((userId: string, documentId: string, replacement: ChunkReplacement) => {
+      assertIndexRevision(db, userId, documentId, replacement.expectedRevision);
+      assertUserChunkLimit(db, userId, replacement.chunks.length, replacement.maxChunksPerUser, documentId);
       const updated = this.updateProfile.run({
         userId,
         documentId,
@@ -144,6 +167,7 @@ export class SqliteDocumentRepository implements DocumentRepository {
         if (!previous) {
           throw new NotFoundError("Document not found.");
         }
+        assertUserChunkLimit(db, userId, replacement.chunks.length, replacement.maxChunksPerUser, documentId);
         replaceDocumentRow.run({ userId, documentId, ...replacement, ...profileColumns(replacement.indexProfile) });
         this.deleteChunksOfDocument.run(userId, documentId);
         for (const chunk of replacement.chunks) {
@@ -153,7 +177,8 @@ export class SqliteDocumentRepository implements DocumentRepository {
       },
     );
 
-    this.saveTransaction = db.transaction((document: DocumentRecord, chunks: ChunkRecord[]) => {
+    this.saveTransaction = db.transaction((document: DocumentRecord, chunks: ChunkRecord[], maxChunksPerUser?: number) => {
+      assertUserChunkLimit(db, document.userId, chunks.length, maxChunksPerUser);
       this.insertDocument.run({
         ...document,
         ...profileColumns(document.indexProfile),
@@ -168,15 +193,18 @@ export class SqliteDocumentRepository implements DocumentRepository {
     });
   }
 
-  async saveWithChunks(document: DocumentRecord, chunks: ChunkRecord[]) {
-    this.saveTransaction(document, chunks);
+  async saveWithChunks(document: DocumentRecord, chunks: ChunkRecord[], maxChunksPerUser?: number) {
+    throwIfCancelled();
+    this.saveTransaction(document, chunks, maxChunksPerUser);
   }
 
   async replaceChunks(userId: string, documentId: string, replacement: ChunkReplacement) {
+    throwIfCancelled();
     this.replaceTransaction(userId, documentId, replacement);
   }
 
   async replaceDocument(userId: string, documentId: string, replacement: DocumentReplacement) {
+    throwIfCancelled();
     return this.replaceDocumentTransaction(userId, documentId, replacement);
   }
 
@@ -190,15 +218,21 @@ export class SqliteDocumentRepository implements DocumentRepository {
   }
 
   async setContentHash(userId: string, documentId: string, contentHash: string) {
+    throwIfCancelled();
     return this.updateHash.run(contentHash, userId, documentId).changes > 0;
   }
 
   async updateStoredName(userId: string, documentId: string, storedName: string) {
+    throwIfCancelled();
     return this.updateStoredNameStatement.run(storedName, userId, documentId).changes > 0;
   }
 
   async countChunks(userId: string, documentId: string) {
     return this.countChunkRows.get(userId, documentId)?.count ?? 0;
+  }
+
+  async countChunksForUser(userId: string) {
+    return this.countUserChunks(userId);
   }
 
   async getUsage(userId: string) {
@@ -214,11 +248,17 @@ export class SqliteDocumentRepository implements DocumentRepository {
     return row ? toDocument(row) : null;
   }
 
+  async readIndexSnapshot(userId: string, documentId: string) {
+    return this.readSnapshot(userId, documentId);
+  }
+
   async updateSummary(userId: string, documentId: string, summary: string, expectedVersion?: number) {
+    throwIfCancelled();
     this.updateSummaryStatement.run({ summary, userId, documentId, expectedVersion: expectedVersion ?? null });
   }
 
   async delete(userId: string, documentId: string) {
+    throwIfCancelled();
     return this.deleteStatement.run(userId, documentId).changes > 0;
   }
 }

@@ -34,6 +34,7 @@ async function main() {
       outputDir: output,
       now: () => new Date(),
       applicationVersion: APPLICATION_VERSION,
+      allowIncomplete: command.allowIncomplete,
     });
     console.log(formatBackupSummary(output, manifest));
     return 0;

@@ -4,10 +4,11 @@ import { ChatOpenAI } from "@langchain/openai";
 import type { ChatMessage, ChatModel } from "../../application/ports/chat-model.js";
 import { ExternalServiceError } from "../../shared/errors.js";
 import { readTextContent } from "./response-text.js";
+import type { OperationOptions } from "../../shared/operation.js";
 
 /** The slice of a LangChain chat model this adapter needs (also what tests fake). */
 export type InvokableChatModel = {
-  invoke(messages: BaseMessage[]): Promise<{ content: unknown }>;
+  invoke(messages: BaseMessage[], options?: OperationOptions): Promise<{ content: unknown }>;
 };
 
 function toLangChainMessage(message: ChatMessage) {
@@ -17,13 +18,15 @@ function toLangChainMessage(message: ChatMessage) {
 export class OpenAIChatModel implements ChatModel {
   constructor(private readonly model: InvokableChatModel) {}
 
-  async complete(messages: ChatMessage[]) {
+  async complete(messages: ChatMessage[], options: OperationOptions = {}) {
+    options.signal?.throwIfAborted();
     let text: string;
 
     try {
-      const response = await this.model.invoke(messages.map(toLangChainMessage));
+      const response = await this.model.invoke(messages.map(toLangChainMessage), options);
       text = readTextContent(response.content);
     } catch (error) {
+      options.signal?.throwIfAborted();
       throw new ExternalServiceError("openai", { cause: error });
     }
 

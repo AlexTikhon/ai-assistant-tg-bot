@@ -5,13 +5,14 @@ import type { BackupVerification } from "../infrastructure/backup/verify-backup.
 
 export const BACKUP_USAGE = `Writes a restorable copy of the local installation into a new directory:
 
-  app.db          a consistent snapshot of the database (SQLite online backup, safe while the bot runs)
+  app.db          a consistent snapshot of the database (writes pause until originals are copied)
   files/          the original uploaded files the snapshot refers to
   manifest.json   schema version, counts, index profiles, sizes and SHA-256 of everything
 
 Usage: npm run backup -- [--output <directory>]
 
   --output <dir>   where to write (must not exist or be empty); default ./backups/bot-backup-<timestamp>
+  --allow-incomplete   explicitly preserve missing originals as a partial recovery backup
   --help           show this help
 
 A backup never includes .env, API keys, the bot token or logs. Check one with: npm run backup:verify -- <directory>
@@ -20,20 +21,21 @@ To restore one: stop the bot, then run: npm run restore -- --from <directory>  (
 export const VERIFY_USAGE = `Checks that a backup is complete and intact. It does not modify the backup or touch the live installation.
 
 Usage: npm run backup:verify -- <backup-directory>
+  --allow-incomplete   explicitly accept originals recorded as missing (partial recovery only)
 
 Verifies the manifest, the database and every original file (size and SHA-256), that the database opens and
 passes SQLite's structural check, that every document's file is present, that recorded content hashes agree,
 and runs the integrity checks of \`npm run integrity\` on the copy. Exit code 1 when a problem is found.`;
 
-export type BackupCommand = { kind: "run"; output: string | undefined } | { kind: "help" } | { kind: "error"; message: string };
-export type VerifyCommand = { kind: "run"; directory: string } | { kind: "help" } | { kind: "error"; message: string };
+export type BackupCommand = { kind: "run"; output: string | undefined; allowIncomplete?: boolean } | { kind: "help" } | { kind: "error"; message: string };
+export type VerifyCommand = { kind: "run"; directory: string; allowIncomplete?: boolean } | { kind: "help" } | { kind: "error"; message: string };
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export function parseBackupArgs(argv: string[]): BackupCommand {
   try {
-    const { values } = parseArgs({ args: argv, options: { output: { type: "string" }, help: { type: "boolean" } }, strict: true, allowPositionals: false });
-    return values.help ? { kind: "help" } : { kind: "run", output: values.output };
+    const { values } = parseArgs({ args: argv, options: { output: { type: "string" }, "allow-incomplete": { type: "boolean" }, help: { type: "boolean" } }, strict: true, allowPositionals: false });
+    return values.help ? { kind: "help" } : { kind: "run", output: values.output, ...(values["allow-incomplete"] ? { allowIncomplete: true } : {}) };
   } catch (error) {
     return { kind: "error", message: messageOf(error) };
   }
@@ -41,10 +43,10 @@ export function parseBackupArgs(argv: string[]): BackupCommand {
 
 export function parseVerifyArgs(argv: string[]): VerifyCommand {
   try {
-    const { values, positionals } = parseArgs({ args: argv, options: { help: { type: "boolean" } }, strict: true, allowPositionals: true });
+    const { values, positionals } = parseArgs({ args: argv, options: { "allow-incomplete": { type: "boolean" }, help: { type: "boolean" } }, strict: true, allowPositionals: true });
     if (values.help) return { kind: "help" };
     if (positionals.length !== 1) return { kind: "error", message: "Give exactly one backup directory." };
-    return { kind: "run", directory: positionals[0] };
+    return { kind: "run", directory: positionals[0], ...(values["allow-incomplete"] ? { allowIncomplete: true } : {}) };
   } catch (error) {
     return { kind: "error", message: messageOf(error) };
   }

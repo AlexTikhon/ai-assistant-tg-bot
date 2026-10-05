@@ -33,6 +33,7 @@ function setup(overrides: { readConfig?: () => unknown; createApplication?: () =
       events.push("startupCheck");
     }),
     close: vi.fn(() => void events.push("close")),
+    drain: async () => undefined,
   } as unknown as Application;
 
   const deps = {
