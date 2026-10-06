@@ -36,6 +36,9 @@ jobs:
       - name: Install (from the lockfile)
         run: npm ci
 
+      - name: Lint (ESLint - async mistakes, type imports, unused code)
+        run: npm run lint
+
       - name: Type check
         run: npm run typecheck
 

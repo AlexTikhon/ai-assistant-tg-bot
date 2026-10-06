@@ -1,3 +1,5 @@
+import { formatMegabytes } from "./utils/text.js";
+
 /**
  * Expected application failures.
  *
@@ -20,6 +22,11 @@ export class ValidationError extends AppError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "VALIDATION_ERROR", options);
   }
+}
+
+/** The one message for an upload refused because of its size - from the Telegram download, ingestion and replacement alike. */
+export function fileTooLargeError(maxBytes: number) {
+  return new ValidationError(`The file is too large. The limit is ${formatMegabytes(maxBytes)}.`);
 }
 
 /** The requested entity does not exist or does not belong to the user. */

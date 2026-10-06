@@ -4,7 +4,7 @@ import { normalizeText } from "../shared/utils/text.js";
  * Text of one source page, as found in the original file. `label` is the printed page label ("iii", "7") when
  * the file declares one and the extractor reads it reliably; it is never derived from `pageNumber`.
  */
-export type SourcePage = { pageNumber: number; text: string; label?: string };
+type SourcePage = { pageNumber: number; text: string; label?: string };
 
 /** Where a page's text sits inside the combined document text (end exclusive). */
 export type PageSpan = { pageNumber: number; start: number; end: number; label?: string };

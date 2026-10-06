@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { ANSWER_QUESTION_SYSTEM_PROMPT } from "../../src/application/prompts/answer-question.prompt.js";
 import { HybridRetriever } from "../../src/application/hybrid-retriever.js";
+import type { DocumentRepository } from "../../src/application/ports/document-repository.js";
 import { AnswerQuestionUseCase, MAX_QUESTION_CHARS } from "../../src/application/use-cases/answer-question.use-case.js";
+import { NotFoundError } from "../../src/shared/errors.js";
 import { answered, createTestStores, FakeChatModel, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
 
 let stores: ReturnType<typeof createTestStores>;
@@ -22,10 +24,11 @@ function createLog(): TestLog {
   return { entries, info: record, warn: record };
 }
 
-function createUseCase(options: { logQuestions?: boolean; ragDebug?: boolean } = {}, log: TestLog = createLog()) {
+function createUseCase(options: { logQuestions?: boolean; ragDebug?: boolean } = {}, log: TestLog = createLog(), documents?: Pick<DocumentRepository, "findById">) {
   return new AnswerQuestionUseCase({
     retriever: new HybridRetriever({ embeddings, vectorStore: stores.vectorStore, options: retrievalOptions }),
     chatModel,
+    documents,
     options,
     log,
   });
@@ -53,6 +56,37 @@ beforeEach(() => {
   stores = createTestStores();
   embeddings = new KeywordEmbeddings();
   chatModel = new FakeChatModel("The cat sleeps. [1]");
+});
+
+describe("AnswerQuestionUseCase: a question about one document", () => {
+  beforeEach(async () => {
+    await index("user-1", "doc-cats", "cats.md", ["the cat sleeps on the sofa"]);
+    await index("user-1", "doc-dogs", "dogs.md", ["the cat chased the dog"]);
+    await index("user-2", "doc-secret", "secret.md", ["the cat knows a secret"]);
+  });
+
+  it("answers from the named document only", async () => {
+    const result = await createUseCase({}, createLog(), stores.documents).execute({ userId: "user-1", question: "cat?", documentId: "doc-dogs" });
+
+    expect(result.kind === "answered" && result.sources.map((source) => source.fileName)).toEqual(["dogs.md"]);
+  });
+
+  it.each([
+    ["nonexistent", "user-1", "doc-nope"],
+    ["another user's", "user-1", "doc-secret"],
+    ["empty (which must never widen the search to everything)", "user-1", ""],
+  ])("a %s document is 'not found' before any retrieval or model call", async (_label, userId, documentId) => {
+    await expect(createUseCase({}, createLog(), stores.documents).execute({ userId, question: "cat?", documentId })).rejects.toBeInstanceOf(NotFoundError);
+
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it("without the ownership check retrieval is still owner-scoped: another user's document yields no evidence, never its text", async () => {
+    const result = await createUseCase().execute({ userId: "user-1", question: "cat secret?", documentId: "doc-secret" });
+
+    expect(result.kind).toBe("insufficient-evidence");
+    expect(chatModel.calls).toHaveLength(0);
+  });
 });
 
 describe("AnswerQuestionUseCase", () => {

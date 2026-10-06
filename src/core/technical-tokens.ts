@@ -1,6 +1,6 @@
 import { ENGLISH_STOP_WORDS, extractTerms } from "./lexical-query.js";
 
-export type TechnicalTokenKind = "identifier" | "filename" | "version";
+type TechnicalTokenKind = "identifier" | "filename" | "version";
 
 export type TechnicalToken = { text: string; kind: TechnicalTokenKind };
 
@@ -22,13 +22,11 @@ const FILE_EXTENSIONS: ReadonlySet<string> = new Set(
   ).split(" "),
 );
 
-/** Shortest all-capitals word that counts: shorter acronyms (API, HTTP, JSON) are generic and match everything. */
-const MIN_UPPERCASE_LETTERS = 5;
-
 const VERSION = /^[vV]\d+(?:\.\d+)+(?:[-+][\p{L}\p{N}.]+)?$|^\d+(?:\.\d+){2,}(?:[-+][\p{L}\p{N}.]+)?$/u;
 /** "3rd", "24h", "5pm": a number with a unit or ordinal suffix is ordinary language. */
 const NUMBER_WITH_SUFFIX = /^\d+\p{L}{1,3}$/u;
 const DOTTED_NAME = /^\p{Ll}[\p{Ll}\p{N}_]+(?:\.\p{Ll}[\p{Ll}\p{N}_]+)+$/u;
+/** Shortest all-capitals word that counts (5 letters): shorter acronyms (API, HTTP, JSON) are generic and match everything. */
 const ALL_CAPS = /^\p{Lu}{5,}$/u;
 /** lowerCamelCase (useEffect, getUserId). PascalCase is left out: product names (PostgreSQL, PurrFeed) are ordinary prose. */
 const CAMEL_CASE = /^\p{Ll}+\p{Lu}/u;

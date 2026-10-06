@@ -16,7 +16,7 @@ import type { AggregateMetrics } from "./metrics.js";
 /** Evaluation measures the gate itself, so the operational rollout mode (off/shadow/enforce) is not a setting here. */
 export type RetrievalSettings = Omit<RetrievalOptions, "rrfK" | "confidenceMode"> & { rrfK: number };
 
-export const DEFAULT_KS = [1, 3, 5] as const;
+const DEFAULT_KS = [1, 3, 5] as const;
 
 export type RetrievedItem = {
   rank: number;

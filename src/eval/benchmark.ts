@@ -42,7 +42,7 @@ const VOCABULARY_SIZE = 3000;
 const WORDS_PER_CHUNK = 120;
 
 /** The i-th word of a synthetic vocabulary; unique per i, pronounceable, one FTS token. */
-export function vocabularyWord(index: number) {
+function vocabularyWord(index: number) {
   const base = SYLLABLES.length;
   return `${SYLLABLES[index % base]}${SYLLABLES[Math.floor(index / base) % base]}${SYLLABLES[Math.floor(index / (base * base)) % base]}`;
 }
@@ -103,7 +103,7 @@ export function percentile(values: readonly number[], p: number) {
   return sorted[index];
 }
 
-export type StageResult = { name: string; medianMs: number; p95Ms: number };
+type StageResult = { name: string; medianMs: number; p95Ms: number };
 
 export type BenchmarkResult = {
   chunks: number;

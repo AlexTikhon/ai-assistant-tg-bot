@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import pino from "pino";
 import type { DestinationStream } from "pino";
 import { currentRequestId } from "./request-context.js";
@@ -15,12 +16,26 @@ function scrubError(error: unknown): unknown {
   return serialized;
 }
 
+// Random per process and never written anywhere: a pseudonym is stable while the process runs and different after a restart.
+const pseudonymKey = randomBytes(16);
+
+/**
+ * What a log line says instead of a Telegram user id: "u-" and 8 hex characters of a keyed hash. It lets one user's lines be
+ * correlated within a run without putting a stable, identifying number into logs. It is for correlation only, not a security
+ * boundary (the id space is small, so anyone holding the key could test guesses - and the key lives only in this process's
+ * memory). Authorization never uses it: everything else in the application works with the real id.
+ */
+export function pseudonymizeUserId(userId: string | number) {
+  return `u-${createHmac("sha256", pseudonymKey).update(String(userId)).digest("hex").slice(0, 8)}`;
+}
+
 /**
  * Structured JSON logger.
  *
  * Conventions (the full rule is in docs/security.md, "What may be logged"): ids, counts, ranks, durations, health states and error
  * categories - never question or answer text, document or chunk text, embeddings, tokens or keys.
  * Lines logged inside a Telegram update also carry its `requestId`.
+ * A `userId` field is never written as it is: the line carries `user` (see pseudonymizeUserId) instead.
  * Errors go under the `err` key so they are serialized (and scrubbed) consistently.
  */
 export function createLogger(destination?: DestinationStream, level = process.env.LOG_LEVEL ?? "info") {
@@ -30,7 +45,11 @@ export function createLogger(destination?: DestinationStream, level = process.en
       serializers: { err: scrubError },
       // Whatever is logged, strings that look like a token or a key never reach the output. (Errors are scrubbed by their serializer above.)
       formatters: {
-        log: ({ err, ...fields }: Record<string, unknown>) => ({ ...(scrubDeep(fields) as Record<string, unknown>), ...(err === undefined ? {} : { err }) }),
+        log: ({ err, userId, ...fields }: Record<string, unknown>) => ({
+          ...(scrubDeep(fields) as Record<string, unknown>),
+          ...(userId === undefined ? {} : { user: pseudonymizeUserId(String(userId)) }),
+          ...(err === undefined ? {} : { err }),
+        }),
       },
       // Every line logged while an update is being handled carries its short request id (see request-context.ts).
       mixin: () => {
@@ -47,8 +66,6 @@ export function createLogger(destination?: DestinationStream, level = process.en
 }
 
 export const logger = createLogger();
-
-export type Logger = typeof logger;
 
 /** The one-method views of a logger that application code needs (so tests can pass a plain function). */
 type LogFn = (fields: Record<string, unknown>, message: string) => void;

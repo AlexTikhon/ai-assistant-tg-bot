@@ -2,7 +2,7 @@ import { groundCitations } from "../../core/citations.js";
 import type { Citation } from "../../core/document.js";
 import type { RetrievedChunk } from "../../core/retrieval.js";
 import type { AbstainReason, ConfidenceAssessment, RetrievalSignals } from "../../core/retrieval-confidence.js";
-import { ValidationError } from "../../shared/errors.js";
+import { NotFoundError, ValidationError } from "../../shared/errors.js";
 import { logger } from "../../shared/logger.js";
 import { currentRequestId } from "../../shared/request-context.js";
 import type { InfoLog, WarnLog } from "../../shared/logger.js";
@@ -10,6 +10,7 @@ import type { HybridRetriever, RetrievalResult, RetrievalTrace } from "../hybrid
 import type { AnswerOutcomes, ConfidenceOutcome } from "../ports/answer-outcomes.js";
 import { buildAnswerMessages } from "../prompts/answer-question.prompt.js";
 import type { ChatModel } from "../ports/chat-model.js";
+import type { DocumentRepository } from "../ports/document-repository.js";
 import { operationSignal, operationStep } from "../../shared/operation.js";
 
 export const MAX_QUESTION_CHARS = 2000;
@@ -17,6 +18,7 @@ export const MAX_QUESTION_CHARS = 2000;
 export type AnswerQuestionInput = {
   userId: string;
   question: string;
+  /** Answer from this one document only. It must be the user's own: any other id, including a nonexistent one, is "not found". */
   documentId?: string;
 };
 
@@ -42,6 +44,8 @@ export type AnswerQuestionResult =
 type Dependencies = {
   retriever: HybridRetriever;
   chatModel: ChatModel;
+  /** Lets a document-scoped question about a document the user does not have fail as "not found" (retrieval itself is always owner-scoped too). */
+  documents?: Pick<DocumentRepository, "findById">;
   options?: {
     /** Include the question text in logs (development only). */
     logQuestions?: boolean;
@@ -71,6 +75,10 @@ export class AnswerQuestionUseCase {
     }
     if (question.length > MAX_QUESTION_CHARS) {
       throw new ValidationError(`The question is too long (max ${MAX_QUESTION_CHARS} characters).`);
+    }
+
+    if (input.documentId !== undefined && this.deps.documents && !(await this.deps.documents.findById(input.userId, input.documentId))) {
+      throw new NotFoundError();
     }
 
     const retrieval = await retriever.retrieve({

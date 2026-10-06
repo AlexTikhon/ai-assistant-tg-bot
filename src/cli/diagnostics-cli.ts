@@ -1,3 +1,4 @@
+import { describeErrorSafely } from "../shared/scrub.js";
 import { parseArgs } from "node:util";
 import type { Diagnostics } from "../infrastructure/diagnostics/collect-diagnostics.js";
 
@@ -17,7 +18,7 @@ export function parseDiagnosticsArgs(argv: string[]): DiagnosticsCommand {
     const { values } = parseArgs({ args: argv, options: { json: { type: "boolean" }, help: { type: "boolean" } }, strict: true, allowPositionals: false });
     return values.help ? { kind: "help" } : { kind: "run", json: values.json ?? false };
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 }
 

@@ -17,7 +17,7 @@ describe("OpenAISpeechToText", () => {
   it("posts the audio with model and auth header and returns trimmed text only", async () => {
     const fetchImpl = vi.fn(async () => Response.json({ text: "  hello world \n", usage: { seconds: 2 } }));
 
-    const text = await createStt(fetchImpl as unknown as typeof fetch).transcribe(audio);
+    const text = await createStt(fetchImpl).transcribe(audio);
 
     expect(text).toBe("hello world");
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -120,7 +120,7 @@ describe("OpenAIEmbeddingsProvider", () => {
       requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
       started();
     }));
-    const provider = createOpenAIEmbeddings({ apiKey: "test", model: "test", timeoutMs: 1000, fetchImpl: fetchImpl as typeof fetch });
+    const provider = createOpenAIEmbeddings({ apiKey: "test", model: "test", timeoutMs: 1000, fetchImpl: fetchImpl });
     const reason = new Error("cancelled");
     const result = provider.embedDocuments(Array.from({ length: provider.batchSize! + 1 }, () => "cat"), { signal: controller.signal });
     const rejected = expect(result).rejects.toBe(reason);
@@ -133,7 +133,7 @@ describe("OpenAIEmbeddingsProvider", () => {
 
   it("restores input order from SDK response indices and refuses incomplete responses", async () => {
     const fetchImpl = vi.fn(async () => Response.json({ data: [{ index: 1, embedding: [0, 1] }, { index: 0, embedding: [1, 0] }] }));
-    const provider = createOpenAIEmbeddings({ apiKey: "test", model: "test", timeoutMs: 1000, fetchImpl: fetchImpl as typeof fetch });
+    const provider = createOpenAIEmbeddings({ apiKey: "test", model: "test", timeoutMs: 1000, fetchImpl: fetchImpl });
     expect(await provider.embedDocuments(["cat", "dog"])).toEqual([[1, 0], [0, 1]]);
     fetchImpl.mockImplementationOnce(async () => Response.json({ data: [{ index: 0, embedding: [1, 0] }] }));
     await expect(provider.embedDocuments(["cat", "dog"])).rejects.toBeInstanceOf(ExternalServiceError);

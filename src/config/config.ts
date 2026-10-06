@@ -45,7 +45,7 @@ function configError(issues: string[]) {
 }
 
 /** Environment and storage locations. Needed by every command that opens the database. */
-export const baseConfig = section(
+const baseConfig = section(
   z.object({
     NODE_ENV: z.string().default("development"),
     DATA_DIR: z.string().min(1).default("data"),
@@ -64,7 +64,7 @@ export const baseConfig = section(
 );
 
 /** Model names and timeouts - everything about OpenAI except the secret. Enough for offline tools. */
-export const openAiModelsConfig = section(
+const openAiModelsConfig = section(
   z.object({
     OPENAI_CHAT_MODEL: z.string().min(1).default("gpt-4.1-mini"),
     OPENAI_EMBEDDINGS_MODEL: z.string().min(1).default("text-embedding-3-small"),
@@ -86,7 +86,7 @@ export const openAiConfig = section(
 );
 
 /** How documents are split. These values are part of the index profile. */
-export const chunkingConfig = section(
+const chunkingConfig = section(
   z
     .object({
       CHUNK_SIZE: positiveInt(1000),
@@ -100,13 +100,13 @@ export const chunkingConfig = section(
 );
 
 /** Upload handling (bot only). */
-export const uploadConfig = section(
+const uploadConfig = section(
   z.object({ MAX_UPLOAD_BYTES: positiveInt(10 * 1024 * 1024), REQUEST_TIMEOUT_MS: positiveInt(60_000) }),
   (env) => ({ maxUploadBytes: env.MAX_UPLOAD_BYTES, downloadTimeoutMs: env.REQUEST_TIMEOUT_MS }),
 );
 
 /** Query-time settings. None of them is persisted, so changing them never makes an index stale. */
-export const retrievalConfig = section(
+const retrievalConfig = section(
   z.object({
     RETRIEVAL_TOP_K: positiveInt(5),
     MIN_SIMILARITY_SCORE: z.coerce.number().min(-1).max(1).default(0.2),
@@ -122,16 +122,15 @@ export const retrievalConfig = section(
      * Shadow is the default: the 0.5 threshold was calibrated on synthetic embeddings only and has not been
      * validated against real OpenAI embeddings, so it must not change answers until it has been observed.
      */
-    RETRIEVAL_CONFIDENCE_MODE: z.enum(["off", "shadow", "enforce"]).optional(),
-    /** Older switch, only read when RETRIEVAL_CONFIDENCE_MODE is not set: false = off, true = enforce. */
-    RETRIEVAL_CONFIDENCE_GATE: z.enum(["true", "false"]).optional(),
+    RETRIEVAL_CONFIDENCE_MODE: z.enum(["off", "shadow", "enforce"]).default("shadow"),
+    /** Removed switch (false = off, true = enforce). Rejected rather than ignored, so a deployment that relied on it cannot silently fall back to shadow. */
+    RETRIEVAL_CONFIDENCE_GATE: z.never({ error: "was removed; use RETRIEVAL_CONFIDENCE_MODE=off, shadow or enforce" }).optional(),
     // Defaults mirror DEFAULT_CONFIDENCE_POLICY (core); a test keeps them equal. Cosine similarity is specific to the embedding model: re-calibrate (npm run eval:confidence) after changing it.
     RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: z.coerce.number().min(-1).max(1).default(0.5),
     RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: z.coerce.number().min(0).max(1).default(0.6),
   }),
   (env) => {
-    const gate = env.RETRIEVAL_CONFIDENCE_GATE;
-    const confidenceMode = env.RETRIEVAL_CONFIDENCE_MODE ?? (gate === "false" ? "off" : gate === "true" ? "enforce" : "shadow");
+    const confidenceMode = env.RETRIEVAL_CONFIDENCE_MODE;
 
     return {
       topK: env.RETRIEVAL_TOP_K,
@@ -156,7 +155,7 @@ export const retrievalConfig = section(
   },
 );
 
-export const limitsConfig = section(
+const limitsConfig = section(
   z.object({
     MAX_DOCUMENTS_PER_USER: positiveInt(100),
     MAX_STORAGE_BYTES_PER_USER: positiveInt(200 * 1024 * 1024),
@@ -188,10 +187,23 @@ export const telegramConfig = section(
   }),
 );
 
-export const diagnosticsConfig = section(
+const diagnosticsConfig = section(
   z.object({ LOG_QUESTIONS: booleanFlag, RAG_DEBUG: booleanFlag, FEEDBACK_BUTTONS: booleanFlag }),
   (env) => ({ logQuestions: env.LOG_QUESTIONS, ragDebug: env.RAG_DEBUG, feedbackButtons: env.FEEDBACK_BUTTONS }),
 );
+
+/**
+ * The values of every section - or, when any section is invalid, one error that lists the problems of all of them at once
+ * (a variable read by two sections is reported once).
+ */
+function collect<R extends Record<string, SectionResult<unknown>>>(sections: R) {
+  const issues = [...new Set(Object.values(sections).flatMap((result) => (result.ok ? [] : result.issues)))];
+  if (issues.length > 0) {
+    throw configError(issues);
+  }
+  const values = Object.entries(sections).map(([name, result]) => [name, (result as { value: unknown }).value]);
+  return Object.fromEntries(values) as { [K in keyof R]: R[K] extends SectionResult<infer T> ? T : never };
+}
 
 export type AppConfig = ReturnType<typeof loadConfig>;
 
@@ -203,25 +215,22 @@ export type CoreConfig = Pick<AppConfig, "storage" | "ingestion" | "retrieval" |
  * are not part of it, so a process that only needs the core runs without them.
  */
 export function loadCoreConfig(source: EnvSource = process.env): CoreConfig {
-  const sections = {
+  const config = collect({
     base: baseConfig.tryLoad(source),
     chunking: chunkingConfig.tryLoad(source),
     upload: uploadConfig.tryLoad(source),
     retrieval: retrievalConfig.tryLoad(source),
     limits: limitsConfig.tryLoad(source),
     diagnostics: diagnosticsConfig.tryLoad(source),
-  };
-  if (!sections.base.ok || !sections.chunking.ok || !sections.upload.ok || !sections.retrieval.ok || !sections.limits.ok || !sections.diagnostics.ok) {
-    throw configError([...new Set(Object.values(sections).flatMap((result) => (result.ok ? [] : result.issues)))]);
-  }
+  });
 
   return {
-    storage: sections.base.value.storage,
-    ingestion: { ...sections.upload.value, ...sections.chunking.value },
-    retrieval: sections.retrieval.value,
-    limits: sections.limits.value,
-    logQuestions: sections.diagnostics.value.logQuestions,
-    ragDebug: sections.diagnostics.value.ragDebug,
+    storage: config.base.storage,
+    ingestion: { ...config.upload, ...config.chunking },
+    retrieval: config.retrieval,
+    limits: config.limits,
+    logQuestions: config.diagnostics.logQuestions,
+    ragDebug: config.diagnostics.ragDebug,
   };
 }
 
@@ -230,34 +239,28 @@ export type ToolConfig = ReturnType<typeof loadToolConfig>;
 
 /** Configuration for commands that never talk to Telegram (reindex, evaluation, benchmark). */
 export function loadToolConfig(source: EnvSource = process.env) {
-  const sections = {
+  const config = collect({
     base: baseConfig.tryLoad(source),
     models: openAiModelsConfig.tryLoad(source),
     chunking: chunkingConfig.tryLoad(source),
     retrieval: retrievalConfig.tryLoad(source),
     limits: limitsConfig.tryLoad(source),
-  };
-  if (!sections.base.ok || !sections.models.ok || !sections.chunking.ok || !sections.retrieval.ok || !sections.limits.ok) {
-    throw configError(Object.values(sections).flatMap((result) => (result.ok ? [] : result.issues)));
-  }
+  });
 
   return {
-    nodeEnv: sections.base.value.nodeEnv,
-    storage: sections.base.value.storage,
-    openai: sections.models.value,
-    chunking: sections.chunking.value,
-    retrieval: sections.retrieval.value,
-    limits: sections.limits.value,
+    nodeEnv: config.base.nodeEnv,
+    storage: config.base.storage,
+    openai: config.models,
+    chunking: config.chunking,
+    retrieval: config.retrieval,
+    limits: config.limits,
   } as const;
 }
 
-/**
- * Full configuration of the Telegram bot: every section, validated together so a misconfigured
- * deployment reports all of its problems at once.
- */
+/** Full configuration of the Telegram bot: every section, validated together so a misconfigured deployment reports all of its problems at once. */
 export function loadConfig(source: EnvSource = process.env) {
-  const sections = {
-    tool: baseConfig.tryLoad(source),
+  const config = collect({
+    base: baseConfig.tryLoad(source),
     models: openAiModelsConfig.tryLoad(source),
     key: openAiConfig.tryLoad(source),
     chunking: chunkingConfig.tryLoad(source),
@@ -266,35 +269,19 @@ export function loadConfig(source: EnvSource = process.env) {
     limits: limitsConfig.tryLoad(source),
     telegram: telegramConfig.tryLoad(source),
     diagnostics: diagnosticsConfig.tryLoad(source),
-  };
-
-  if (
-    !sections.tool.ok ||
-    !sections.models.ok ||
-    !sections.key.ok ||
-    !sections.chunking.ok ||
-    !sections.upload.ok ||
-    !sections.retrieval.ok ||
-    !sections.limits.ok ||
-    !sections.telegram.ok ||
-    !sections.diagnostics.ok
-  ) {
-    const issues = Object.values(sections).flatMap((result) => (result.ok ? [] : result.issues));
-    // REQUEST_TIMEOUT_MS is read by two sections; report a bad value once.
-    throw configError([...new Set(issues)]);
-  }
+  });
 
   return {
-    nodeEnv: sections.tool.value.nodeEnv,
-    telegram: sections.telegram.value.telegram,
-    openai: { apiKey: sections.key.value, ...sections.models.value },
-    storage: sections.tool.value.storage,
-    ingestion: { ...sections.upload.value, ...sections.chunking.value },
-    retrieval: sections.retrieval.value,
-    limits: sections.limits.value,
-    rateLimit: sections.telegram.value.rateLimit,
-    logQuestions: sections.diagnostics.value.logQuestions,
-    ragDebug: sections.diagnostics.value.ragDebug,
-    feedbackButtons: sections.diagnostics.value.feedbackButtons,
+    nodeEnv: config.base.nodeEnv,
+    telegram: config.telegram.telegram,
+    openai: { apiKey: config.key, ...config.models },
+    storage: config.base.storage,
+    ingestion: { ...config.upload, ...config.chunking },
+    retrieval: config.retrieval,
+    limits: config.limits,
+    rateLimit: config.telegram.rateLimit,
+    logQuestions: config.diagnostics.logQuestions,
+    ragDebug: config.diagnostics.ragDebug,
+    feedbackButtons: config.diagnostics.feedbackButtons,
   } as const;
 }

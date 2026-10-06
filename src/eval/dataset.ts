@@ -62,7 +62,7 @@ export type EvalCase = z.infer<typeof evalCaseSchema>;
 
 export type EvalDataset = { version: number; description?: string; cases: EvalCase[] };
 
-export type SplitCounts = { queries: number; answerable: number; unanswerable: number };
+type SplitCounts = { queries: number; answerable: number; unanswerable: number };
 export type DatasetDescription = SplitCounts & { bySplit: Record<DatasetSplit, SplitCounts> };
 
 /** A retrieved chunk as the evaluation sees it: who owns it, which file it is from and its text. */
@@ -88,7 +88,7 @@ export function parseDatasetFile(text: string): EvalDataset {
     try {
       json = JSON.parse(line);
     } catch (error) {
-      throw new Error(`Invalid dataset ${where}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Invalid dataset ${where}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
 
     if (typeof json === "object" && json !== null && "dataset" in json) {

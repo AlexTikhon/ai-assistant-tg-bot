@@ -17,17 +17,18 @@ Supported Node.js: **22.12+ and 24** (`engines` in `package.json`; both run the 
 git clone <repo> && cd <repo>
 nvm use                      # or any Node 22.12+/24
 npm ci                       # exactly what package-lock.json says
-npm run check                # typecheck + tests + build + smoke + smoke:cli (no credentials, no network)
+npm run check                # lint + typecheck + tests + build + smoke + smoke:cli (no credentials, no network)
 cp .env.example .env         # set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY
-npm start                    # node dist/index.js - compiled code, no tsx
+npm start                    # node --enable-source-maps dist/index.js - compiled code, no tsx
 ```
 
 | Script | What it is | Runs |
 | --- | --- | --- |
 | `dev` | the bot with auto-restart (needs the sources) | tsx |
-| `typecheck`, `test`, `test:coverage` | development checks | tsc, vitest |
+| `lint`, `typecheck`, `test`, `test:coverage` | development checks (ESLint with typescript-eslint, tsc, vitest) | eslint, tsc, vitest |
+| `check`, `check:release` | the pre-push command; the release check adds the retrieval regression gate, the confidence report and the runtime audit | npm scripts |
 | `build` | compile to `dist/` (cleans it first) | tsc |
-| `start` | the bot | `node dist/index.js` |
+| `start` | the bot (`--enable-source-maps`: stack traces in the log name the TypeScript file and line; the maps hold no source text) | `node --enable-source-maps dist/index.js` |
 | `smoke` | can this build start with its local infrastructure? (real SQLite, FTS5, retrieval, use cases, backup, restore; offline providers) | `node dist/cli/smoke.js` |
 | `smoke:cli` | do the operational commands work from compiled code without credentials? | `node dist/cli/smoke-cli.js` |
 | `integrity`, `backup`, `backup:verify`, `restore`, `diagnostics`, `db:maintenance`, `reindex` | operational commands | `node dist/cli/<name>.js` |
@@ -217,14 +218,14 @@ Migrations only move forward. A database written by a newer version is refused (
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on pull requests and pushes to `main`, needs **no secrets** and calls no external service. Jobs: **verify** on Node 24 and 22 (install from the lockfile, typecheck, the full test suite, build, `smoke`, `smoke:cli`, the retrieval regression baseline, the offline evaluation and the confidence calibration report), **coverage** (a diagnostic with a job summary and an artifact, no threshold), **package** (a bundle of `dist/`, the manifests and the docs), **docker** (build the image, check it runs as non-root, the volume is writable, the image holds no secrets or sources, and run `smoke` and `smoke:cli` inside it), and **security** (below). The real `better-sqlite3` is installed the normal way and exercised - nothing is mocked - and the smoke test asserts FTS5 is compiled in.
+`.github/workflows/ci.yml` runs on pull requests and pushes to `main`, needs **no secrets** and calls no external service. Jobs: **verify** on Node 24 and 22 (install from the lockfile, lint, typecheck, the full test suite, build, `smoke`, `smoke:cli`, the retrieval regression baseline, the offline evaluation and the confidence calibration report), **coverage** (a diagnostic with a job summary and an artifact, no threshold), **package** (a bundle of `dist/`, the manifests and the docs), **docker** (build the image, check it runs as non-root, the volume is writable, the image holds no secrets or sources, and run `smoke` and `smoke:cli` inside it), and **security** (below). The real `better-sqlite3` is installed the normal way and exercised - nothing is mocked - and the smoke test asserts FTS5 is compiled in.
 
 ## Dependency audit policy
 
 - `npm audit --omit=dev` (runtime dependencies) **fails the build** on any known vulnerability.
 - `npm audit` (everything) is **reported, never blocking**: a transitive advisory in a development tool must not stop a release, but it is visible in every run.
 - `npm audit fix --force` is never run. Dependabot (weekly: npm, GitHub Actions, the base image) opens pull requests; nothing is merged automatically.
-- **Known, accepted:** `esbuild 0.27.3-0.28.0` (GHSA-g7r4-m6w7-qqqr, low): arbitrary file read through esbuild's *development server on Windows*. It is a transitive dependency of `tsx`/`vitest` (development only), is not in the production image or `node_modules` of a production install, and this project never starts esbuild's server. It is cleared by the next compatible dependency update.
+- **Currently:** no known advisory, runtime or development. (`esbuild 0.27.3-0.28.0`, GHSA-g7r4-m6w7-qqqr, low - arbitrary file read through esbuild's development server on Windows, a transitive development dependency this project never exposes - was cleared by updating `tsx`, which pulls in the patched esbuild.) An advisory in a development-only tool that cannot be cleared by a compatible update is documented here rather than hidden.
 
 ## Worked scenarios
 
@@ -233,7 +234,7 @@ Migrations only move forward. A database written by a newer version is refused (
 | | |
 | --- | --- |
 | **Detection** | the startup log: `config` -> `database` -> `storage` -> `retrieval` -> startup check -> `telegram` -> `ready` |
-| **Application / CLI** | `npm ci`, `npm run check` (typecheck, 1300+ tests, build, smoke, smoke:cli), then `npm start`. The bot validates the configuration, creates the data directory (0700), opens `app.db` (0600, WAL), migrates to the current schema, runs the structural check, logs the confidence mode (`shadow`), syncs the command menu and starts polling |
+| **Application / CLI** | `npm ci`, `npm run check` (lint, typecheck, 1400+ tests, build, smoke, smoke:cli), then `npm start`. The bot validates the configuration, creates the data directory (0700), opens `app.db` (0600, WAL), migrates to the current schema, runs the structural check, logs the confidence mode (`shadow`), syncs the command menu and starts polling |
 | **DB effect** | a new database at the latest schema version, no documents |
 | **Filesystem effect** | `data/` and `data/files/` created |
 | **Operator sees** | seven stage log lines ending in "Application started"; `npm run diagnostics` shows schema = expected, 0 documents |

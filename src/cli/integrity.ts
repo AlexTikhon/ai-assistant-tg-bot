@@ -3,7 +3,7 @@ import "./quiet-logs.js";
 import { createIntegrityTool } from "../composition-root.js";
 import { loadToolConfig } from "../config/config.js";
 import { formatIntegrityReport, formatRepairResult, INTEGRITY_USAGE, parseIntegrityArgs } from "./integrity-cli.js";
-import { runCli } from "./run-cli.js";
+import { printUsage, runCli } from "./run-cli.js";
 
 /**
  * `npm run integrity [-- --repair [--remove-orphans]] [--skip-hashes] [--json]`.
@@ -13,14 +13,7 @@ import { runCli } from "./run-cli.js";
 async function main() {
   const command = parseIntegrityArgs(process.argv.slice(2));
 
-  if (command.kind === "help") {
-    console.log(INTEGRITY_USAGE);
-    return 0;
-  }
-  if (command.kind === "error") {
-    console.error(`${command.message}\n\n${INTEGRITY_USAGE}`);
-    return 1;
-  }
+  if (command.kind !== "run") return printUsage(command, INTEGRITY_USAGE);
 
   const tool = createIntegrityTool(loadToolConfig(), { writable: command.repair, verifyHashes: command.verifyHashes });
   try {

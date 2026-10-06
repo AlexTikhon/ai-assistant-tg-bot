@@ -48,7 +48,9 @@ export const MAX_DISPLAY_NAME_LENGTH = 255;
 export function normalizeDisplayFileName(fileName: string) {
   const cleaned = fileName
     .normalize("NFC")
-    .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿]/g, "")
+    // Control characters and the zero-width / bidirectional-formatting characters that make names look different from what they are.
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 

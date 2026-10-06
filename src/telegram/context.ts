@@ -27,6 +27,12 @@ export function getCaption(ctx: Context) {
   return message && "caption" in message ? message.caption?.trim() : undefined;
 }
 
+/** `/askdoc <documentId> <question>`: both parts, or undefined when the id or the question is missing. */
+export function parseAskDocArgs(text: string) {
+  const match = /^(\S+)\s+([\s\S]+)$/.exec(parseCommandArgs(text, "askdoc"));
+  return match ? { documentId: match[1], question: match[2] } : undefined;
+}
+
 /**
  * Returns what follows `/command` (also `/command@BotName`), trimmed.
  * Returns "" when the text is not that command.

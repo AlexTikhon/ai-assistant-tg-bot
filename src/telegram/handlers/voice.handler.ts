@@ -2,7 +2,8 @@ import type { Context } from "telegraf";
 import type { SpeechToText } from "../../application/ports/speech-to-text.js";
 import type { AnswerQuestionUseCase } from "../../application/use-cases/answer-question.use-case.js";
 import { withChatAction } from "../chat-action.js";
-import { downloadTelegramFile, tooLargeError } from "../download.js";
+import { downloadTelegramFile } from "../download.js";
+import { fileTooLargeError } from "../../shared/errors.js";
 import type { DownloadLimits } from "../download.js";
 import { messages } from "../ui/messages.js";
 import { replyWithAnswer } from "./ask.handler.js";
@@ -25,7 +26,7 @@ export function createVoiceHandler(
       return;
     }
     if (voice.file_size !== undefined && voice.file_size > limits.maxBytes) {
-      throw tooLargeError(limits.maxBytes);
+      throw fileTooLargeError(limits.maxBytes);
     }
 
     const transcript = await withChatAction(ctx, "typing", async () => {

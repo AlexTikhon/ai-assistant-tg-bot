@@ -1,5 +1,5 @@
 import type { Context } from "telegraf";
-import { ExternalServiceError, ValidationError } from "../shared/errors.js";
+import { ExternalServiceError, fileTooLargeError, ValidationError } from "../shared/errors.js";
 import { HttpStatusError, parseRetryAfter, withRetry } from "../shared/retry.js";
 import type { RetryOptions } from "../shared/retry.js";
 import { operationSignal, operationStep } from "../shared/operation.js";
@@ -16,10 +16,6 @@ export type DownloadDependencies = {
   fetchImpl?: typeof fetch;
   retry?: RetryOptions;
 };
-
-export function tooLargeError(maxBytes: number) {
-  return new ValidationError(`The file is too large. The limit is ${Math.round((maxBytes / (1024 * 1024)) * 10) / 10} MB.`);
-}
 
 /**
  * Downloads a file the user sent to the bot into memory.
@@ -51,7 +47,7 @@ export async function downloadTelegramFile(ctx: Context, fileId: string, limits:
       const declaredLength = Number(response.headers.get("content-length"));
       if (declaredLength > limits.maxBytes) {
         await response.body?.cancel();
-        throw tooLargeError(limits.maxBytes);
+        throw fileTooLargeError(limits.maxBytes);
       }
 
       return await operationStep(() => readBody(response, limits.maxBytes), signal);
@@ -76,7 +72,7 @@ async function readBody(response: Response, maxBytes: number) {
   for await (const part of response.body) {
     total += part.byteLength;
     if (total > maxBytes) {
-      throw tooLargeError(maxBytes);
+      throw fileTooLargeError(maxBytes);
     }
     parts.push(part);
   }

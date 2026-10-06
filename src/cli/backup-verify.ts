@@ -4,20 +4,13 @@ import path from "node:path";
 import { loadToolConfig } from "../config/config.js";
 import { verifyBackup } from "../infrastructure/backup/verify-backup.js";
 import { formatVerification, parseVerifyArgs, VERIFY_USAGE } from "./backup-cli.js";
-import { runCli } from "./run-cli.js";
+import { printUsage, runCli } from "./run-cli.js";
 
 /** `npm run backup:verify -- <directory>`. Read-only; exit code 1 when the backup has problems. */
 async function main() {
   const command = parseVerifyArgs(process.argv.slice(2));
 
-  if (command.kind === "help") {
-    console.log(VERIFY_USAGE);
-    return 0;
-  }
-  if (command.kind === "error") {
-    console.error(`${command.message}\n\n${VERIFY_USAGE}`);
-    return 1;
-  }
+  if (command.kind !== "run") return printUsage(command, VERIFY_USAGE);
 
   const config = loadToolConfig();
   const result = await verifyBackup(path.resolve(command.directory), {

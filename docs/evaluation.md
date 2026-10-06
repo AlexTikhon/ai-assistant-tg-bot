@@ -168,6 +168,8 @@ npm run eval:diff -- offline.json live.json
 
 The new code costs under 1 ms per question - negligible next to the vector scan and orders of magnitude below an LLM call (the gate *saves* a generation whenever it abstains). The semantic scan numbers vary a lot between sessions on a development machine (the same unchanged commit measured 125-290 ms at 10,000 chunks on different runs); compare stages within one run. The scan is not optimized in this iteration.
 
+These stages are timed one by one. In the running bot the semantic scan (worker thread) and the full-text query (main thread) overlap, so a question saves about the duration of the shorter one. Measured once, end to end (`HybridRetriever.retrieve` with the real worker scanner, a file database, a fake 100 ms query embedding; old and new retriever alternated in one process, 60 questions each, medians): 5,000 chunks 443 -> 419 ms, 10,000 chunks 727 -> 659 ms and 735 -> 720 ms in two runs, 2,000 chunks 222 -> 219 ms. The gain is real but small, a few percent of retrieval and less of a question that also waits for the chat model; the machine was noisy, so read it as "about the full-text duration", not as a precise figure. That measurement script is not part of the repository.
+
 ## Known limits of the evaluation
 
 - Small, synthetic, hand-written corpus; 17 unanswerable questions; thresholds are plateaus, not optima.

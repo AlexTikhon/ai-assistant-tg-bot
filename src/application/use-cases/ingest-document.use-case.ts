@@ -4,7 +4,8 @@ import { isSupportedFileName } from "../../core/document.js";
 import { normalizeDisplayFileName } from "../../core/file-validation.js";
 import type { DocumentRecord } from "../../core/document.js";
 import type { IndexHealth } from "../../core/index-health.js";
-import { ValidationError } from "../../shared/errors.js";
+import { fileTooLargeError, ValidationError } from "../../shared/errors.js";
+import { formatMegabytes } from "../../shared/utils/text.js";
 import { KeyedMutex } from "../../shared/keyed-mutex.js";
 import { logger } from "../../shared/logger.js";
 import { describeDocumentIndex } from "../describe-document-index.js";
@@ -115,7 +116,7 @@ export class IngestDocumentUseCase {
       throw new ValidationError("The uploaded file is empty.");
     }
     if (input.data.byteLength > options.maxUploadBytes) {
-      throw new ValidationError(`The file is too large. The limit is ${formatMegabytes(options.maxUploadBytes)}.`);
+      throw fileTooLargeError(options.maxUploadBytes);
     }
 
     const contentHash = hashContent(input.data);
@@ -211,8 +212,4 @@ export class IngestDocumentUseCase {
       );
     }
   }
-}
-
-function formatMegabytes(bytes: number) {
-  return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
 }

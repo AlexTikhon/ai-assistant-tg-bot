@@ -18,7 +18,7 @@ export const APPLICATION_NAME = "telegram-rag-bot";
 export const BACKUP_FORMAT_VERSION = 1;
 
 /** The oldest format this version can still read. Formats from here up to BACKUP_FORMAT_VERSION are supported. */
-export const MIN_SUPPORTED_BACKUP_FORMAT = 1;
+const MIN_SUPPORTED_BACKUP_FORMAT = 1;
 
 export type BackupFormatSupport =
   /** Readable. (An older database schema inside is a separate matter: it is migrated on the restore candidate.) */

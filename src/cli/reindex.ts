@@ -3,7 +3,7 @@ import "./quiet-logs.js";
 import { createReindexTool } from "../composition-root.js";
 import { loadToolConfig, openAiConfig } from "../config/config.js";
 import { formatProgress, formatReport, parseReindexArgs, REINDEX_USAGE } from "./reindex-cli.js";
-import { runCli } from "./run-cli.js";
+import { printUsage, runCli } from "./run-cli.js";
 
 /**
  * `npm run reindex [-- --all | --document <id>] [--rechunk] [--dry-run]`. Exit code 1 on bad input or failed
@@ -12,14 +12,7 @@ import { runCli } from "./run-cli.js";
 async function main() {
   const command = parseReindexArgs(process.argv.slice(2));
 
-  if (command.kind === "help") {
-    console.log(REINDEX_USAGE);
-    return 0;
-  }
-  if (command.kind === "error") {
-    console.error(`${command.message}\n\n${REINDEX_USAGE}`);
-    return 1;
-  }
+  if (command.kind !== "run") return printUsage(command, REINDEX_USAGE);
 
   const config = loadToolConfig();
   const tool = createReindexTool(config, { openaiApiKey: command.dryRun ? undefined : openAiConfig.load() });

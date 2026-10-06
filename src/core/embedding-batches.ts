@@ -5,7 +5,7 @@ export const MAX_EMBEDDING_BATCH_SIZE = 512;
  * Budget for the summed tokens of one embeddings request. OpenAI rejects a request above its per-request cap
  * (300 000 tokens for the text-embedding-3 models), so this stays safely below it.
  */
-export const EMBEDDING_REQUEST_TOKEN_BUDGET = 250_000;
+const EMBEDDING_REQUEST_TOKEN_BUDGET = 250_000;
 
 /**
  * How many chunks to send in one embeddings request. The number of tokens in a chunk is not known here, so the

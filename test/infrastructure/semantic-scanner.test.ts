@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getEventListeners } from "node:events";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDatabase } from "../../src/infrastructure/sqlite/database.js";
 import { SqliteDocumentRepository } from "../../src/infrastructure/sqlite/sqlite-document-repository.js";
 import { SqliteVectorStore } from "../../src/infrastructure/sqlite/sqlite-vector-store.js";
@@ -59,5 +60,67 @@ describe("bounded semantic worker", () => {
     // close also joins any cancelled job still awaiting acknowledgement
     await scanner.close();
     await expect(scanner.search(query)).rejects.toMatchObject({ code: "OPERATION_CANCELLED" });
+  });
+});
+
+describe("semantic worker lifecycle", () => {
+  const query = { userId: "u", embeddingModel: "test-model", embedding: [1, 0], limit: 5, minScore: 0.2 };
+  const internals = () => scanner as unknown as { worker?: { terminate(): Promise<number> }; pending: Map<number, unknown> };
+  const abortListeners = (signal: AbortSignal) => getEventListeners(signal, "abort").length;
+
+  it("rejects, instead of throwing, when the signal is already aborted, and never starts a worker for it", async () => {
+    await expect(scanner.search(query, AbortSignal.abort(new Error("already cancelled")))).rejects.toThrow("already cancelled");
+
+    expect(internals().worker).toBeUndefined();
+  });
+
+  it("an aborted job frees its queue slot as soon as the worker acknowledges it", async () => {
+    const controller = new AbortController();
+    const first = scanner.search(query);
+    const aborted = scanner.search(query, controller.signal);
+    controller.abort(new Error("caller cancelled"));
+    await expect(aborted).rejects.toThrow("caller cancelled");
+    await first;
+
+    await vi.waitFor(() => expect(internals().pending.size).toBe(0));
+    await expect(scanner.search(query)).resolves.toMatchObject({ matches: [] });
+  });
+
+  it("a worker that dies rejects every pending job at once, and the next search starts a fresh worker", async () => {
+    const signals = [new AbortController(), new AbortController()];
+    const jobs = signals.map((controller) => scanner.search(query, controller.signal));
+    const results = Promise.allSettled(jobs);
+
+    await internals().worker?.terminate(); // as if the thread crashed before producing any result
+
+    for (const result of await results) {
+      expect(result).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: "Semantic search worker stopped" }) });
+    }
+    expect(internals().pending.size).toBe(0);
+    expect(signals.map((controller) => abortListeners(controller.signal))).toEqual([0, 0]);
+
+    await expect(scanner.search(query)).resolves.toMatchObject({ matches: [] });
+  });
+
+  it("closing with jobs pending cancels all of them, leaves no abort listener behind and is idempotent", async () => {
+    const controllers = [new AbortController(), new AbortController()];
+    const jobs = controllers.map((controller) => scanner.search(query, controller.signal));
+    const results = Promise.allSettled(jobs);
+
+    await Promise.all([scanner.close(), scanner.close()]);
+
+    for (const result of await results) {
+      expect(result).toMatchObject({ status: "rejected", reason: expect.objectContaining({ code: "OPERATION_CANCELLED" }) });
+    }
+    expect(controllers.map((controller) => abortListeners(controller.signal))).toEqual([0, 0]);
+    expect(internals().worker).toBeUndefined();
+  });
+
+  it("removes its abort listener when a search completes normally", async () => {
+    const controller = new AbortController();
+
+    await scanner.search(query, controller.signal);
+
+    expect(abortListeners(controller.signal)).toBe(0);
   });
 });

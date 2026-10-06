@@ -1,3 +1,8 @@
+/** "10 MB", "2.5 MB": a byte limit the way a person reads it. */
+export function formatMegabytes(bytes: number) {
+  return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+}
+
 /**
  * Normalizes extracted text while keeping paragraph structure.
  *
@@ -6,7 +11,8 @@
  */
 export function normalizeText(input: string) {
   return input
-    .replace(/[\u0000﻿]/g, "")
+    // eslint-disable-next-line no-control-regex -- NUL bytes are removed on purpose
+    .replace(/[\u0000\ufeff]/g, "")
     .replace(/\r\n?/g, "\n")
     .replace(/[^\S\n]+/g, " ")
     .replace(/ ?\n ?/g, "\n")

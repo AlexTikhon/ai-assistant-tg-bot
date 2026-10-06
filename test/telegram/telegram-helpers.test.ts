@@ -1,7 +1,7 @@
 import type { Context } from "telegraf";
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "../../src/shared/errors.js";
-import { getMessageText, parseCommandArgs, requireUserId } from "../../src/telegram/context.js";
+import { getMessageText, parseAskDocArgs, parseCommandArgs, requireUserId } from "../../src/telegram/context.js";
 import { MAX_MESSAGE_LENGTH, replyLongText, splitMessage } from "../../src/telegram/reply.js";
 
 describe("splitMessage", () => {
@@ -71,6 +71,20 @@ describe("parseCommandArgs", () => {
     expect(parseCommandArgs("/ask@my_bot", "ask")).toBe("");
     expect(parseCommandArgs("/asking something", "ask")).toBe("");
     expect(parseCommandArgs("/list", "ask")).toBe("");
+  });
+});
+
+describe("parseAskDocArgs", () => {
+  it("splits the document id from the question, whatever the spacing", () => {
+    expect(parseAskDocArgs("/askdoc abc-123 what is RAG?")).toEqual({ documentId: "abc-123", question: "what is RAG?" });
+    expect(parseAskDocArgs("/askdoc@my_bot   abc-123    spaced   out  ")).toEqual({ documentId: "abc-123", question: "spaced   out" });
+    expect(parseAskDocArgs("/askdoc abc-123\nfirst line\nsecond line")).toEqual({ documentId: "abc-123", question: "first line\nsecond line" });
+  });
+
+  it("is undefined when the id or the question is missing, or the text is another command", () => {
+    for (const text of ["/askdoc", "/askdoc   ", "/askdoc abc-123", "/askdoc abc-123   ", "/ask abc-123 what?", "/askdocs abc-123 what?"]) {
+      expect(parseAskDocArgs(text), text).toBeUndefined();
+    }
   });
 });
 

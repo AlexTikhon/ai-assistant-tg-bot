@@ -45,8 +45,8 @@ import { SemanticScanner } from "./infrastructure/sqlite/semantic-scanner.js";
 
 export type Application = {
   bot: Telegraf;
-  /** What the startup stages report: the migrated schema version, where the data lives, the version and the confidence mode. */
-  readiness: { schemaVersion: number; dataDir: string; version: string; confidenceMode: "off" | "shadow" | "enforce" };
+  /** What the startup stages report: the migrated schema version, where the data lives, the version, the confidence mode and whether question text is logged. */
+  readiness: { schemaVersion: number; dataDir: string; version: string; confidenceMode: "off" | "shadow" | "enforce"; logQuestions: boolean };
   /**
    * The cheap startup health summary (outdated indexes, missing originals, leftover temporary files). Reads only:
    * it never calls a provider, never repairs, and never throws away data. Deep checks: `npm run integrity`.
@@ -124,7 +124,7 @@ function createStorage(settings: StorageSettings) {
 }
 
 /** The real OpenAI-backed providers. */
-export function createOpenAiProviders(config: AppConfig): Providers {
+function createOpenAiProviders(config: AppConfig): Providers {
   return {
     embeddings: createOpenAIEmbeddings({
       apiKey: config.openai.apiKey,
@@ -185,6 +185,7 @@ export function createCore(config: CoreConfig, providers: Providers): Core {
     const answerQuestion = new AnswerQuestionUseCase({
       retriever: new HybridRetriever({ embeddings, vectorStore: queryStore, options: config.retrieval }),
       chatModel,
+      documents,
       outcomes,
       options: { logQuestions: config.logQuestions, ragDebug: config.ragDebug },
     });
@@ -208,6 +209,7 @@ export function createCore(config: CoreConfig, providers: Providers): Core {
         dataDir: config.storage.dataDir,
         version: APPLICATION_VERSION,
         confidenceMode: config.retrieval.confidenceMode,
+        logQuestions: config.logQuestions,
       },
       startupCheck: async () => void (await runStartupCheck({ store: new SqliteIntegrityStore(db), maintenance, files, recipe, now: Date.now, log: logger })),
       drain: () => scanner.close(),

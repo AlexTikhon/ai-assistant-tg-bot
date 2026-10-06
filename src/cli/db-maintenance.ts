@@ -4,19 +4,12 @@ import { loadToolConfig } from "../config/config.js";
 import { openDatabaseForMaintenance, openDatabaseReadOnly } from "../infrastructure/sqlite/database.js";
 import { runMaintenance } from "../infrastructure/sqlite/maintenance.js";
 import { formatMaintenance, isSound, MAINTENANCE_USAGE, parseMaintenanceArgs } from "./db-maintenance-cli.js";
-import { runCli } from "./run-cli.js";
+import { printUsage, runCli } from "./run-cli.js";
 
 /** `npm run db:maintenance [-- --checkpoint] [-- --optimize] [-- --vacuum]`. A plain run only checks. */
 async function main() {
   const command = parseMaintenanceArgs(process.argv.slice(2));
-  if (command.kind === "help") {
-    console.log(MAINTENANCE_USAGE);
-    return 0;
-  }
-  if (command.kind === "error") {
-    console.error(`${command.message}\n\n${MAINTENANCE_USAGE}`);
-    return 1;
-  }
+  if (command.kind !== "run") return printUsage(command, MAINTENANCE_USAGE);
 
   const config = loadToolConfig();
   const request = { checkpoint: command.checkpoint, optimize: command.optimize, vacuum: command.vacuum, sqlitePath: config.storage.sqlitePath };

@@ -15,7 +15,7 @@ export type EvalRunInfo = {
   index: { fingerprint: string; profile: IndexProfile; chunks: number };
 };
 
-export type ExportedCase = {
+type ExportedCase = {
   id: string;
   question: string;
   user: string;

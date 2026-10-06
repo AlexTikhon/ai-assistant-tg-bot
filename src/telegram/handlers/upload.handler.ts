@@ -4,7 +4,8 @@ import type { ReplaceDocumentUseCase } from "../../application/use-cases/replace
 import { isSupportedFileName } from "../../core/document.js";
 import { withChatAction } from "../chat-action.js";
 import { getCaption, hasCommand, parseCommandArgs, requireUserId } from "../context.js";
-import { downloadTelegramFile, tooLargeError } from "../download.js";
+import { downloadTelegramFile } from "../download.js";
+import { fileTooLargeError } from "../../shared/errors.js";
 import type { DownloadLimits } from "../download.js";
 import { formatIngestResult } from "../ui/format.js";
 import { messages } from "../ui/messages.js";
@@ -32,7 +33,7 @@ export function createUploadHandler(
     }
     // Cheap checks first: reject before downloading, parsing or embedding anything.
     if (document.file_size !== undefined && document.file_size > limits.maxBytes) {
-      throw tooLargeError(limits.maxBytes);
+      throw fileTooLargeError(limits.maxBytes);
     }
 
     const caption = getCaption(ctx);

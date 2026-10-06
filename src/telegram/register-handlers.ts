@@ -10,7 +10,7 @@ import type { RecordFeedbackUseCase } from "../application/use-cases/record-feed
 import type { ReplaceDocumentUseCase } from "../application/use-cases/replace-document.use-case.js";
 import type { SummarizeDocumentUseCase } from "../application/use-cases/summarize-document.use-case.js";
 import type { DownloadLimits } from "./download.js";
-import { createAskHandler, createTextHandler } from "./handlers/ask.handler.js";
+import { createAskDocHandler, createAskHandler, createTextHandler } from "./handlers/ask.handler.js";
 import { createDeleteHandler } from "./handlers/delete.handler.js";
 import { createDocHandler } from "./handlers/doc.handler.js";
 import { createFeedbackHandler, FEEDBACK_PATTERN } from "./handlers/feedback.handler.js";
@@ -59,6 +59,7 @@ export function registerHandlers(bot: Telegraf, deps: TelegramDependencies, time
   bot.command("replace", createReplaceHelpHandler());
   const replyOptions = { feedbackButtons: deps.feedback !== undefined };
   bot.command("ask", limited, createAskHandler(deps.answerQuestion, replyOptions));
+  bot.command("askdoc", limited, createAskDocHandler(deps.answerQuestion, replyOptions));
   bot.command("summary", limited, createSummaryHandler(deps.summarizeDocument));
   bot.command("delete", createDeleteHandler(deps.deleteDocument));
 

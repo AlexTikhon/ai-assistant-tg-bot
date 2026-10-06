@@ -76,7 +76,7 @@ src/
                         chunk-overlap trimming, FTS query builder, citation checks and formatting, content hash,
                         index health, storage layout (temporary / orphan files), embedding batch size
   application/
-    hybrid-retriever.ts query embedding -> semantic + lexical search -> RRF -> load -> exact-token bonus
+    hybrid-retriever.ts query embedding -> semantic (worker thread) and lexical search, overlapped -> RRF -> load -> exact-token bonus
                         -> evidence signals -> confidence gate -> context selection
     prepare-index.ts    extract -> split -> provenance -> embed (shared by ingestion and re-chunking)
     assess-index.ts     compares a document's recorded recipe with the configured one
@@ -91,7 +91,7 @@ src/
     check-index-compatibility.ts, startup-check.ts   the cheap startup diagnostics
   infrastructure/
     sqlite/             connection settings (+ read-only / maintenance opens, corruption classification), migrations, repository,
-                        vector store (vectors + FTS5), index maintenance, integrity store (+ deep full-text check), feedback store, maintenance
+                        vector store (vectors + FTS5) + the semantic scan worker, index maintenance, integrity store (+ deep full-text check), feedback store, maintenance
     storage/            local file storage (atomic writes, temporary files)
     backup/             manifest (+ format versioning), create-backup (SQLite online backup), verify-backup, restore-backup, restore leftovers
     diagnostics/        the safe operator summary
@@ -112,7 +112,7 @@ test/                   Vitest suites using fakes for the ports and in-memory SQ
 ## Request flow
 
 1. Telegraf receives an update; `requestContext` gives it a short opaque request id (8 random hex characters, never derived from user content) that the logger adds to every line logged while it is handled - handler, retrieval, generation, ingestion, feedback. `requestLogger` and `errorBoundary` wrap every handler.
-2. `privateChatOnly` refuses shared chats and callbacks before document access or provider calls. Private updates run within an `Operations` deadline scope; handlers that call OpenAI (`/ask`, plain text, `/summary`, uploads, voice) also pass the per-user rate limit.
+2. `privateChatOnly` refuses shared chats and callbacks before document access or provider calls. Private updates run within an `Operations` deadline scope; handlers that call OpenAI (`/ask`, `/askdoc`, plain text, `/summary`, uploads, voice) also pass the per-user rate limit.
 3. A handler reads Telegram specifics (user id, command arguments, file ids), calls one use case, and formats the result as plain text, split into several messages if it exceeds Telegram's limit.
 4. `errorBoundary` replies with the message of an `AppError` (written for users) or a generic message for anything unexpected. Technical details are logged, never sent.
 
@@ -338,4 +338,4 @@ The rate limiter is in memory and per process on purpose (single-process long-po
 
 ## Observability
 
-Every line logged while an update is handled carries its `requestId` (8 hex characters, random) so one update can be followed through handler, retrieval, generation, ingestion and feedback. Every question logs one concise structured line: selected chunk count, stage timings and total duration. An abstained question logs `Question not answered: insufficient evidence` with the reason and the evidence numbers (no text). Logs never contain document text, embeddings, keys or tokens; the question itself only with `LOG_QUESTIONS=true`. With `RAG_DEBUG=true` each answered question also logs candidate counts, selected chunk ids with `semanticRank` / `lexicalRank` / fused rank, why candidates were skipped, the confidence decision with its signals, and the context size - ids and numbers only.
+Every line logged while an update is handled carries its `requestId` (8 hex characters, random) so one update can be followed through handler, retrieval, generation, ingestion and feedback. Every question logs one concise structured line: selected chunk count, stage timings and total duration. An abstained question logs `Question not answered: insufficient evidence` with the reason and the evidence numbers (no text). Logs never contain document text, embeddings, keys or tokens; the question itself only with `LOG_QUESTIONS=true` (development only; the bot warns at startup). A user appears as a `user` pseudonym (`u-` and 8 hex characters of a keyed hash, key random per process), never as the Telegram id; authorization always uses the real id. With `RAG_DEBUG=true` each answered question also logs candidate counts, selected chunk ids with `semanticRank` / `lexicalRank` / fused rank, why candidates were skipped, the confidence decision with its signals, and the context size - ids and numbers only.

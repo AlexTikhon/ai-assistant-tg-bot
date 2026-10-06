@@ -11,7 +11,7 @@ import type { IndexMaintenance } from "../ports/index-maintenance.js";
 import type { RestoreArtifacts } from "../ports/restore-artifacts.js";
 import type { DocumentFacts, IntegrityStore } from "../ports/integrity-store.js";
 
-export type IntegrityCode =
+type IntegrityCode =
   | "database-corrupt"
   | "missing-file"
   | "unreadable-file"
@@ -55,7 +55,7 @@ export type IntegrityIssue = {
   repairable?: boolean;
 };
 
-export type IntegritySummary = {
+type IntegritySummary = {
   documents: number;
   chunks: number;
   errors: number;

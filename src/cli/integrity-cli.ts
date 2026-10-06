@@ -1,3 +1,4 @@
+import { describeErrorSafely } from "../shared/scrub.js";
 import { parseArgs } from "node:util";
 import type { IntegrityIssue, IntegrityReport } from "../application/use-cases/inspect-integrity.use-case.js";
 import type { RepairAction, RepairResult } from "../application/use-cases/repair-integrity.use-case.js";
@@ -42,7 +43,7 @@ export function parseIntegrityArgs(argv: string[]): IntegrityCommand {
       allowPositionals: false,
     }));
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 
   if (values.help) {

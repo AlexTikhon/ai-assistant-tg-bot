@@ -57,6 +57,10 @@ export type RetrieveInput = {
 
 /** Everything worth knowing about how a retrieval went. Contains ids and numbers only - never text. */
 export type RetrievalTrace = {
+  /**
+   * Wall-clock milliseconds per stage. `semanticMs` and `lexicalMs` can overlap (the scan runs in a worker thread while the
+   * full-text query runs here), so the stages do not necessarily add up to `totalMs`: `totalMs` is the elapsed time.
+   */
   timings: {
     embeddingMs: number;
     semanticMs: number;
@@ -205,7 +209,10 @@ export class HybridRetriever {
       return vector;
     });
 
-    const [semantic, semanticMs] = await this.timed(() =>
+    // The vector scan runs in a worker thread and the full-text query on this one (better-sqlite3 is synchronous), so starting the
+    // scan first lets the two genuinely overlap. (Overlapping the query *embedding* with the full-text query would not help: the
+    // synchronous query would delay sending the request.) Whichever finishes last ends the stage.
+    const semanticSearch = this.timed(() =>
       vectorStore.searchSimilar({
         userId: input.userId,
         documentId: input.documentId,
@@ -215,6 +222,8 @@ export class HybridRetriever {
         minScore: options.minScore,
       }),
     );
+    // If the full-text query throws first, the scan's outcome is no longer needed - but must not become an unhandled rejection.
+    semanticSearch.catch(() => undefined);
     const [lexical, lexicalMs] = await this.timed(() =>
       vectorStore.searchLexical({
         userId: input.userId,
@@ -223,6 +232,7 @@ export class HybridRetriever {
         limit: options.lexicalLimit,
       }),
     );
+    const [semantic, semanticMs] = await semanticSearch;
 
     const [fused, fusionMs] = await this.timed(() =>
       reciprocalRankFusion(semantic, lexical, options.rrfK ?? DEFAULT_RRF_K, {

@@ -1,3 +1,4 @@
+import { describeErrorSafely } from "../shared/scrub.js";
 import { parseArgs } from "node:util";
 import type { MaintenanceReport } from "../infrastructure/sqlite/maintenance.js";
 
@@ -22,7 +23,7 @@ export function parseMaintenanceArgs(argv: string[]): MaintenanceCommand {
     if (values.help) return { kind: "help" };
     return { kind: "run", checkpoint: values.checkpoint ?? false, optimize: values.optimize ?? false, vacuum: values.vacuum ?? false };
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 }
 

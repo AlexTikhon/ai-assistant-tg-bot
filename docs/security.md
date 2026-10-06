@@ -24,11 +24,13 @@ One rule for every log line. Logs are structured JSON and are meant to be sharea
 
 | May be logged | Must not be logged |
 | --- | --- |
-| document id, the Telegram user id (the user-scoped opaque id), the request id | the text of questions (only the length; the text only with the explicit development switch `LOG_QUESTIONS=true`) |
+| document id, a per-process pseudonym of the Telegram user id (`user: "u-1a2b3c4d"`), the request id | the Telegram user id itself, the text of questions (only the length; the text only with the explicit development switch `LOG_QUESTIONS=true`, which is announced by a startup warning) |
 | durations, counts (chunks, requests, files), ranks, scores | answers, summaries, voice transcripts |
 | index health states, confidence decisions and their numbers | chunk text, document content, captions |
 | error categories and messages (scrubbed) | embeddings / vectors |
 | the confidence mode, versions, schema version | API keys, tokens, authorization headers, Telegram file URLs (they contain the token) |
+
+**User ids in logs.** The logger rewrites a `userId` field to `user`: `u-` plus 8 hex characters of an HMAC-SHA-256 of the id under a random key that exists only in the process's memory. One user's lines can be correlated within a run; after a restart the same user gets a different pseudonym, and the Telegram id is never written. It is for correlation, not a security boundary (the id space is small, so whoever holds the key could test guesses), and nothing uses it for authorization: ownership checks work with the real id.
 
 How it is enforced: errors are serialized through the scrubber (message, stack, extra properties and causes), every other log field passes through it too (`formatters.log`), the configured secrets are registered by value, and a test scans every `log.*(...)` call in `src/` for forbidden field names. File names are metadata, not content, but they are user-chosen text: they are not part of routine log lines (they appear in operator tool output such as `integrity`, which a person runs on their own machine). `npm run diagnostics` prints no file name, user id, document text, secret or full path at all.
 

@@ -47,4 +47,4 @@ USER node
 STOPSIGNAL SIGTERM
 
 # Telegram long polling is the only thing this process does: there is no HTTP port and so no HEALTHCHECK (see docs/operations.md).
-CMD ["node", "dist/index.js"]
+CMD ["node", "--enable-source-maps", "dist/index.js"]

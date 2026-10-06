@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Telegraf } from "telegraf";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createOfflineProviders, ScriptedChatModel } from "../../src/cli/smoke-providers.js";
+import { createOfflineProviders } from "../../src/cli/smoke-providers.js";
 import { createApplication } from "../../src/composition-root.js";
 import type { Application, Providers } from "../../src/composition-root.js";
 import { loadConfig } from "../../src/config/config.js";
@@ -75,7 +75,7 @@ function start(overrides: Partial<Providers> = {}, env: Record<string, string> =
   });
   app = createApplication(config, { ...providers, ...overrides }, { apiRoot });
   bot = app.bot;
-  bot.botInfo = { id: 1, is_bot: true, first_name: "Test", username: "test_bot", can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false } as typeof bot.botInfo;
+  bot.botInfo = { id: 1, is_bot: true, first_name: "Test", username: "test_bot", can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false };
 }
 
 beforeEach(() => {
@@ -244,6 +244,83 @@ describe("missing arguments and unknown ids", () => {
 
     await send(textUpdate("/list", 42));
     expect(lastReply()).toContain(id); // and it is still the owner's
+  });
+});
+
+describe("/askdoc: a question about one document", () => {
+  const TRAVEL = Buffer.from("# Travel policy\n\n## Flights\nBook economy flights at least two weeks ahead.\n");
+  const QUESTION = "When does the nightly backup run?";
+  const NOT_ENOUGH = "I couldn't find enough information in your uploaded documents to answer that.";
+
+  it("searches only the named document: the same question finds the handbook through /ask but not inside the travel policy", async () => {
+    const handbook = await upload();
+    const travel = await upload("travel.md", TRAVEL);
+
+    await send(textUpdate(`/askdoc ${handbook} ${QUESTION}`));
+    expect(lastReply()).toContain("Sources:\n[1] handbook.md · Operations handbook > Backups");
+
+    const chatCallsBefore = providers.chatModel.calls.length;
+    await send(textUpdate(`/askdoc ${travel} ${QUESTION}`));
+    expect(lastReply()).toBe(NOT_ENOUGH);
+    expect(providers.chatModel.calls).toHaveLength(chatCallsBefore); // refused before any model call
+
+    await send(textUpdate(`/ask ${QUESTION}`)); // the whole knowledge base is unchanged
+    expect(lastReply()).toContain("handbook.md");
+  });
+
+  it("a nonexistent id and another user's document id get the same answer, and nothing is embedded or generated", async () => {
+    const foreign = await upload("handbook.md", HANDBOOK, 42);
+    const embeddedBefore = providers.embeddings.calls;
+
+    await send(textUpdate(`/askdoc 00000000-0000-0000-0000-000000000000 ${QUESTION}`, 43));
+    const nonexistent = lastReply();
+    await send(textUpdate(`/askdoc ${foreign} ${QUESTION}`, 43));
+
+    expect(nonexistent).toBe("Document not found.");
+    expect(lastReply()).toBe(nonexistent);
+    expect(providers.embeddings.calls).toBe(embeddedBefore);
+    expect(providers.chatModel.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["no arguments", "/askdoc"],
+    ["only blanks", "/askdoc    "],
+    ["an id without a question", "/askdoc 7c1f2c9e-0000-4000-8000-000000000000"],
+    ["an id and a blank question", "/askdoc 7c1f2c9e-0000-4000-8000-000000000000   "],
+  ])("%s explains the usage and calls no provider", async (_label, command) => {
+    await send(textUpdate(command));
+
+    expect(lastReply()).toBe("Use /askdoc <documentId> <question>. Find the id with /list.");
+    expect(providers.embeddings.calls).toBe(0);
+  });
+
+  it("accepts the /askdoc@botname form, extra spaces and a question over several lines", async () => {
+    const id = await upload();
+
+    await send(textUpdate(`/askdoc@test_bot    ${id}   When does the\nnightly   backup run?`));
+
+    expect(lastReply()).toContain("Sources:\n[1] handbook.md");
+  });
+
+  it("an over-long question is refused with the same message as /ask", async () => {
+    const id = await upload();
+
+    await send(textUpdate(`/askdoc ${id} ${"why ".repeat(600)}`));
+
+    expect(lastReply()).toMatch(/^The question is too long \(max 2000 characters\)\.$/);
+  });
+
+  it("keeps the feedback buttons, and is in the help text", async () => {
+    app.close();
+    start({}, { FEEDBACK_BUTTONS: "true" });
+    const id = await upload();
+
+    await send(textUpdate(`/askdoc ${id} ${QUESTION}`));
+    const answer = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(JSON.stringify(answer?.payload.reply_markup)).toContain("fb:");
+
+    await send(textUpdate("/help"));
+    expect(lastReply()).toContain("/askdoc <documentId> <question>");
   });
 });
 

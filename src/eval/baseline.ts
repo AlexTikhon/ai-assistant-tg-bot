@@ -48,7 +48,7 @@ export function parseBaseline(json: string): Baseline {
   return parsed.data;
 }
 
-export type BaselineCheck = { metric: string; actual: number; minimum: number; ok: boolean };
+type BaselineCheck = { metric: string; actual: number; minimum: number; ok: boolean };
 
 export type BaselineResult = {
   passed: boolean;

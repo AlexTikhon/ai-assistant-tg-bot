@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HybridRetriever } from "../../src/application/hybrid-retriever.js";
 import type { RetrievalOptions } from "../../src/application/hybrid-retriever.js";
-import type { VectorStore } from "../../src/application/ports/vector-store.js";
+import type { LexicalSearch, VectorStore } from "../../src/application/ports/vector-store.js";
 import { createTestStores, KeywordEmbeddings, makeChunk, makeDocument } from "../support/fakes.js";
 
 let stores: ReturnType<typeof createTestStores>;
@@ -148,16 +148,77 @@ describe("HybridRetriever", () => {
 
     const { trace } = await retrieve(createRetriever(), "cat ECONNRESET");
 
+    // The vector and full-text searches overlap (see the tests below): their durations are each measured, and need not add up to the total.
     expect(trace.timings).toEqual({
       embeddingMs: 5,
-      semanticMs: 5,
-      lexicalMs: 5,
+      semanticMs: expect.any(Number),
+      lexicalMs: expect.any(Number),
       fusionMs: 5,
       contextMs: 5,
       totalMs: expect.any(Number),
     });
     expect(trace.counts).toEqual({ semantic: 1, lexical: 2, fused: 2, loaded: 2, selected: 2 });
     expect(trace.contextChars).toBe("cat one".length + "ECONNRESET two".length);
+  });
+
+  describe("concurrent candidate searches", () => {
+    /** A store whose vector search stays pending until the test releases it. */
+    function slowVectorSearch() {
+      const calls: string[] = [];
+      let release!: (matches: Awaited<ReturnType<VectorStore["searchSimilar"]>>) => void;
+      let fail!: (error: Error) => void;
+      const pending = new Promise<Awaited<ReturnType<VectorStore["searchSimilar"]>>>((resolve, reject) => {
+        release = resolve;
+        fail = reject;
+      });
+      const vectorStore: VectorStore = Object.assign(Object.create(stores.vectorStore) as VectorStore, {
+        searchSimilar: () => {
+          calls.push("semantic started");
+          return pending;
+        },
+        searchLexical: async (search: LexicalSearch) => {
+          calls.push("lexical started");
+          return stores.vectorStore.searchLexical(search);
+        },
+      });
+      return { vectorStore, calls, release, fail };
+    }
+
+    it("runs the full-text query while the vector scan is still in flight, and fuses both afterwards", async () => {
+      await index("user-1", "doc-1", "ops.md", ["the cat sleeps", "Error ECONNRESET upstream"]);
+      const { vectorStore, calls, release } = slowVectorSearch();
+
+      const result = retrieve(createRetriever({}, vectorStore), "cat ECONNRESET");
+      await vi.waitFor(() => expect(calls).toEqual(["semantic started", "lexical started"]));
+      release([{ chunkId: "doc-1-0", documentId: "doc-1", chunkIndex: 0, score: 0.9 }]);
+
+      const { chunks, trace } = await result;
+      expect(chunks.map((chunk) => chunk.chunkId).sort()).toEqual(["doc-1-0", "doc-1-1"]);
+      expect(trace.counts).toMatchObject({ semantic: 1, lexical: 2, fused: 2 });
+    });
+
+    it("a failing full-text query rejects the retrieval, and the scan that is still running leaves no unhandled rejection", async () => {
+      await index("user-1", "doc-1", "ops.md", ["the cat sleeps"]);
+      const { vectorStore, fail } = slowVectorSearch();
+      vectorStore.searchLexical = async () => {
+        throw new Error("fts failed");
+      };
+
+      const result = retrieve(createRetriever({}, vectorStore), "cat");
+      await expect(result).rejects.toThrow("fts failed");
+      fail(new Error("scan failed too")); // would crash the process (and fail this test run) if nobody observed it
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    it("a failing vector scan rejects the retrieval", async () => {
+      await index("user-1", "doc-1", "ops.md", ["the cat sleeps"]);
+      const { vectorStore, fail } = slowVectorSearch();
+
+      const result = retrieve(createRetriever({}, vectorStore), "cat");
+      fail(new Error("scan failed"));
+
+      await expect(result).rejects.toThrow("scan failed");
+    });
   });
 
   it("returns an empty result without loading anything when nothing matches", async () => {

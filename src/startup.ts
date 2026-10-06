@@ -51,6 +51,10 @@ export async function startBot<Config>(deps: Dependencies<Config>): Promise<Star
   // Shadow computes the answerability decision and logs it, but never changes a reply; enforce is an explicit operator decision.
   log.info({ stage: "retrieval", confidenceMode: app.readiness.confidenceMode }, `Retrieval confidence gate: ${app.readiness.confidenceMode}`);
 
+  if (app.readiness.logQuestions) {
+    log.warn({ stage: "logging" }, "LOG_QUESTIONS is on: the text of every question is written to the log. For development only - never with other people's data");
+  }
+
   try {
     // A diagnostic: it must never be the reason the bot does not start.
     await app.startupCheck().catch((err) => log.warn({ stage: "startup-check", err }, "The startup check failed; continuing"));

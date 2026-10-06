@@ -1,5 +1,6 @@
 import type { Context, MiddlewareFn } from "telegraf";
-import { OperationCancelledError, Operations } from "../shared/operation.js";
+import type { Operations } from "../shared/operation.js";
+import { OperationCancelledError } from "../shared/operation.js";
 
 /** A safe deadline reply is sent outside the cancelled scope; all late handler replies are refused. */
 export function createOperationMiddleware(operations: Operations, timeoutMs: number): MiddlewareFn<Context> {

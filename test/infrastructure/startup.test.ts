@@ -28,7 +28,7 @@ function setup(overrides: { readConfig?: () => unknown; createApplication?: () =
   };
   const app = {
     bot,
-    readiness: { schemaVersion: 8, dataDir: "/data", version: "1.2.3", confidenceMode: "shadow" },
+    readiness: { schemaVersion: 8, dataDir: "/data", version: "1.2.3", confidenceMode: "shadow", logQuestions: false },
     startupCheck: vi.fn(async () => {
       events.push("startupCheck");
     }),
@@ -56,6 +56,19 @@ describe("startBot: readiness stages", () => {
     expect(entries.filter((entry) => entry.fields.stage).map((entry) => entry.fields.stage)).toEqual(["config", "database", "storage", "retrieval", "telegram", "ready"]);
     expect(entries.find((entry) => entry.fields.stage === "database")?.fields).toMatchObject({ schemaVersion: 8, version: "1.2.3" });
     expect(events).toEqual(["startupCheck"]);
+  });
+
+  it("warns at startup when LOG_QUESTIONS writes question text to the log, and only then", async () => {
+    const off = setup();
+    await startBot(off.deps);
+    expect(off.entries.filter((entry) => entry.level === "warn")).toEqual([]);
+
+    const on = setup();
+    on.app.readiness.logQuestions = true;
+    await startBot(on.deps);
+    expect(on.entries.filter((entry) => entry.level === "warn")).toEqual([
+      expect.objectContaining({ fields: { stage: "logging" }, message: expect.stringContaining("LOG_QUESTIONS is on") }),
+    ]);
   });
 
   it("never logs secrets: the configuration object itself is not logged", async () => {

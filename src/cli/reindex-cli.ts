@@ -1,3 +1,4 @@
+import { describeErrorSafely } from "../shared/scrub.js";
 import { parseArgs } from "node:util";
 import { MARKDOWN_EXTRACTOR_VERSION } from "../core/index-profile.js";
 import type { StaleReason } from "../core/index-profile.js";
@@ -48,7 +49,7 @@ export function parseReindexArgs(argv: string[]): ReindexCommand {
       allowPositionals: false,
     }));
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 
   if (values.help) {

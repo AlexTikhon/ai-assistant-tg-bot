@@ -5,6 +5,7 @@ export const botCommands = [
   { command: "doc", description: "Show details of a document" },
   { command: "replace", description: "Replace a document with a new file" },
   { command: "ask", description: "Ask about your documents" },
+  { command: "askdoc", description: "Ask about one document" },
   { command: "summary", description: "Summarize a document" },
   { command: "delete", description: "Delete a document" },
 ];

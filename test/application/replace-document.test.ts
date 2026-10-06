@@ -323,12 +323,14 @@ describe("ReplaceDocumentUseCase and summaries", () => {
     const id = await seed();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
+    let modelEntered!: () => void;
+    const entered = new Promise<void>((resolve) => (modelEntered = resolve));
     const chatModel = new FakeChatModel("unused");
-    chatModel.complete = async () => (await gate, "A summary of the OLD content.");
+    chatModel.complete = async () => (modelEntered(), await gate, "A summary of the OLD content.");
     const summarize = new SummarizeDocumentUseCase({ documents: stores.documents, vectorStore: stores.vectorStore, chatModel });
 
     const summarizing = summarize.execute("user-1", id); // reads the old chunks, then waits for the model
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await entered; // the old chunks have been read; only the model call is outstanding
     await replacer().execute(replaceInput(id, V2));
     release();
     await summarizing;

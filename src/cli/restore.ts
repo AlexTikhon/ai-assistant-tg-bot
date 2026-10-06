@@ -4,7 +4,7 @@ import path from "node:path";
 import { loadToolConfig } from "../config/config.js";
 import { RestoreError, restoreBackup } from "../infrastructure/backup/restore-backup.js";
 import { formatRestoreError, formatRestoreReport, parseRestoreArgs, RESTORE_USAGE, targetFor } from "./restore-cli.js";
-import { runCli } from "./run-cli.js";
+import { printUsage, runCli } from "./run-cli.js";
 
 /**
  * `npm run restore -- --from <backup> [--target <dir>] [--replace-existing] [--discard-previous] [--dry-run]`.
@@ -15,14 +15,7 @@ import { runCli } from "./run-cli.js";
 async function main() {
   const command = parseRestoreArgs(process.argv.slice(2));
 
-  if (command.kind === "help") {
-    console.log(RESTORE_USAGE);
-    return 0;
-  }
-  if (command.kind === "error") {
-    console.error(`${command.message}\n\n${RESTORE_USAGE}`);
-    return 1;
-  }
+  if (command.kind !== "run") return printUsage(command, RESTORE_USAGE);
 
   const config = loadToolConfig();
   try {

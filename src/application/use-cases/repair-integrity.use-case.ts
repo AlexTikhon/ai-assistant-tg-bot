@@ -61,7 +61,7 @@ export class RepairIntegrityUseCase {
   constructor(private readonly deps: Dependencies) {}
 
   async execute(options: RepairOptions): Promise<RepairResult> {
-    const { inspect, store, documents, files } = this.deps;
+    const { inspect, documents, files } = this.deps;
     const before = await inspect.execute();
     const actions: RepairAction[] = [];
 

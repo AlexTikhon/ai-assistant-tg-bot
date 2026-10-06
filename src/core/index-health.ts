@@ -4,7 +4,7 @@ import type { StaleKind } from "./index-profile.js";
  * What can be wrong with a document's index. Nothing here is stored: it is derived from the document's
  * recorded profile, its chunks and the file system, so it can never disagree with them.
  */
-export type HealthIssue =
+type HealthIssue =
   /** No chunks at all: nothing can be found in this document. */
   | "unindexed"
   /** Some stored vectors cannot be read (bad blob, dimension 0); the chunk text is still searchable by keyword. */
@@ -18,7 +18,7 @@ export type HealthIssue =
   /** The original file is gone from storage: the index works, but it cannot be rebuilt from the file. */
   | "missing-file";
 
-export type IndexHealthState = "current" | HealthIssue;
+type IndexHealthState = "current" | HealthIssue;
 
 export type IndexHealth = {
   /** The most serious issue, or "current". */

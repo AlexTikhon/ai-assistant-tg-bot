@@ -1,14 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { IntegrityStore } from "../../src/application/ports/integrity-store.js";
 import { IngestDocumentUseCase } from "../../src/application/use-cases/ingest-document.use-case.js";
 import { InspectIntegrityUseCase } from "../../src/application/use-cases/inspect-integrity.use-case.js";
 import type { IntegrityReport } from "../../src/application/use-cases/inspect-integrity.use-case.js";
 import { RepairIntegrityUseCase } from "../../src/application/use-cases/repair-integrity.use-case.js";
 import { openDatabase, openDatabaseReadOnly } from "../../src/infrastructure/sqlite/database.js";
-import { SqliteIndexMaintenance } from "../../src/infrastructure/sqlite/sqlite-index-maintenance.js";
 import { SqliteIntegrityStore } from "../../src/infrastructure/sqlite/sqlite-integrity-store.js";
 import { SqliteDocumentRepository } from "../../src/infrastructure/sqlite/sqlite-document-repository.js";
 import { createTestStores, InMemoryFileStorage, KeywordEmbeddings, Utf8Extractor } from "../support/fakes.js";

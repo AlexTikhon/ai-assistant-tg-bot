@@ -121,7 +121,7 @@ describe("page provenance of chunks", () => {
     const middle = chunks.filter((chunk) => chunk.pageStart === 2 && chunk.pageEnd === 2);
 
     expect(middle.length).toBeGreaterThanOrEqual(2);
-    expect(chunks.every((chunk) => chunk.pageStart !== undefined && chunk.pageEnd! >= chunk.pageStart!)).toBe(true);
+    expect(chunks.every((chunk) => chunk.pageStart !== undefined && chunk.pageEnd! >= chunk.pageStart)).toBe(true);
     const starts = chunks.map((chunk) => chunk.pageStart!);
     expect(starts).toEqual([...starts].sort((a, b) => a - b));
   });

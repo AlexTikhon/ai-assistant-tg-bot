@@ -19,7 +19,9 @@ flowchart TD
 
 1. **Embed** the question (validated: finite, non-empty).
 2. **Semantic search** compares it with the user's chunks embedded by the *same model and dimension* (cosine, `MIN_SIMILARITY_SCORE`, best `RETRIEVAL_SEMANTIC_LIMIT`). Ranking reads only ids and vectors, no chunk text.
-3. **Lexical search** runs the question through FTS5 (best `RETRIEVAL_LEXICAL_LIMIT` by BM25).
+3. **Lexical search** runs the question through FTS5 (best `RETRIEVAL_LEXICAL_LIMIT` by BM25). It does not need the embedding. The vector scan runs in a worker thread and better-sqlite3 is synchronous, so the scan is started first and the full-text query runs on the main thread while the worker scans; fusion waits for both. (Overlapping the lexical query with the *embedding request* would gain nothing: the synchronous query would delay sending the request.) The stage timings in the logs are wall-clock per stage and can overlap, so they do not necessarily add up to the total.
+
+   `/askdoc <documentId> <question>` runs this same pipeline with steps 2-3 limited to one document (the use case first checks that the document is the asker's; a missing or foreign id is "Document not found.").
 4. **Fuse** the two ranked lists with Reciprocal Rank Fusion.
 5. **Load** the text of only the best `3 x RETRIEVAL_TOP_K` fused candidates, then add the **exact-token bonus** to candidates that contain an identifier / file name / version / quoted phrase of the question verbatim.
 6. **Judge the evidence** (`assessRetrievalConfidence`, pure). With the gate enforced, weak evidence is **not** sent to the model in the hope that the prompt makes it refuse: the use case returns `{ kind: "insufficient-evidence" }` and Telegram says "I couldn't find enough information in your uploaded documents to answer that." The chat model is not called, which also saves the generation cost. Rules, calibration and limits: [evaluation.md](evaluation.md). Whether the verdict is applied is an operating mode - see [Rolling out the gate](#rolling-out-the-gate).
@@ -76,7 +78,7 @@ Shadow is the default because enforcing an uncalibrated threshold could refuse v
 ```text
 mode, decision (answer | abstain), reason, wouldAbstain, answered, semanticScore, semanticGap, threshold,
 termCoverage, termCoverageThreshold, exactTargets, exactTargetsFound, identifiers, identifiersFound,
-candidateCount, semanticCount, lexicalCount, durationMs, userId, requestId
+candidateCount, semanticCount, lexicalCount, durationMs, user (a pseudonym, not the Telegram id), requestId
 ```
 
 Numbers and labels only - never the question (not even with `LOG_QUESTIONS`), a document, the context or a vector. Collect a few days of real questions, then look at the distribution of `semanticScore` among `wouldAbstain: true` lines: if many of them are questions that were fine, the 0.5 threshold is too aggressive for `text-embedding-3-small`. The older `RETRIEVAL_CONFIDENCE_GATE=false` still works (it means `off`; `true` means `enforce`) when no mode is set. Do not change a threshold from synthetic evaluation alone; use `npm run eval:confidence -- --live --confirm-spend` ([evaluation.md](evaluation.md)) and these logs.

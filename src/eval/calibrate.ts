@@ -12,7 +12,7 @@ export type CalibrationCase = {
   signals: RetrievalSignals;
 };
 
-export type GateOutcomeRecord = {
+type GateOutcomeRecord = {
   id: string;
   answerable: boolean;
   decision: "answer" | "abstain";
@@ -83,7 +83,7 @@ export type Objective = {
  * aggressive one (lowest thresholds, identifier rule on). If no policy keeps that much recall, the best recall
  * comes first - refusing valid questions is the costlier mistake.
  */
-export function rankPolicies(sweep: readonly SweepResult[], objective: Objective): SweepResult[] {
+function rankPolicies(sweep: readonly SweepResult[], objective: Objective): SweepResult[] {
   const first = sweep[0];
   if (!first || first.calibration.outcomes.length === 0) {
     throw new Error("Cannot choose a policy without calibration cases.");

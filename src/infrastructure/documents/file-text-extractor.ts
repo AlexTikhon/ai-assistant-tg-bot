@@ -8,7 +8,7 @@ import { getFileExtension } from "../../shared/utils/path.js";
 import type { OperationOptions } from "../../shared/operation.js";
 
 /** More pages than this is refused before any text is extracted (see MAX_PDF_PAGES in the configuration). */
-export const DEFAULT_MAX_PDF_PAGES = 1000;
+const DEFAULT_MAX_PDF_PAGES = 1000;
 
 const TEXT_PROBLEMS: Record<TextProblem, string> = {
   pdf: "This file is a PDF. Send it with the .pdf extension.",

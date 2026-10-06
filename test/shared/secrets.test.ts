@@ -139,6 +139,30 @@ describe("structured logs", () => {
     expect(text()).not.toContain("an-unusual-secret-value");
   });
 
+  it("a Telegram user id is logged as a pseudonym: stable per user within the run, never the number itself", () => {
+    const { logger, lines, text } = capture();
+
+    logger.info({ userId: 5551234567, durationMs: 3 }, "Update handled"); // the middleware logs the number Telegram sends
+    logger.info({ userId: "5551234567" }, "Question answered"); // the application logs the string form
+    logger.info({ userId: "5559876543" }, "Question answered");
+
+    expect(text()).not.toContain("5551234567");
+    expect(text()).not.toContain("5559876543");
+    expect(lines.every((line) => !("userId" in line))).toBe(true);
+    expect(lines[0].user).toMatch(/^u-[0-9a-f]{8}$/);
+    expect(lines[1].user).toBe(lines[0].user);
+    expect(lines[2].user).not.toBe(lines[0].user);
+    expect(lines[0]).toMatchObject({ durationMs: 3 });
+  });
+
+  it("a line without a user id gets no user field", () => {
+    const { logger, lines } = capture();
+
+    logger.info({ documentId: "doc-1" }, "Document deleted");
+
+    expect(lines[0]).not.toHaveProperty("user");
+  });
+
   it("the error serializer still produces the usual structure", () => {
     const { logger, lines } = capture();
 

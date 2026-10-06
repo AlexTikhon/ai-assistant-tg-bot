@@ -1,3 +1,4 @@
+import { describeErrorSafely } from "../shared/scrub.js";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import type { RestoreError, RestoreReport, RestoreTarget } from "../infrastructure/backup/restore-backup.js";
@@ -61,7 +62,7 @@ export function parseRestoreArgs(argv: string[]): RestoreCommand {
       ...(values["allow-incomplete"] ? { allowIncomplete: true } : {}),
     };
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 }
 

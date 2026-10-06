@@ -146,7 +146,7 @@ export const PASS_THROUGH_POLICY: ConfidencePolicy = { minSemanticScore: -1, min
 export type ConfidenceMode = "off" | "shadow" | "enforce";
 
 /** Why the evidence was judged sufficient. */
-export type AnswerReason = "exact-token" | "semantic" | "term-coverage";
+type AnswerReason = "exact-token" | "semantic" | "term-coverage";
 /** Why it was not. */
 export type AbstainReason = "no-candidates" | "identifier-not-found" | "weak-evidence";
 export type ConfidenceReason = AnswerReason | AbstainReason;

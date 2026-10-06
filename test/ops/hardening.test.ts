@@ -43,7 +43,7 @@ describe("logging rule: what may be logged (docs/security.md)", () => {
     const text = fs.readFileSync(file, "utf-8");
     return [...text.matchAll(/\b(?:this\.)?(?:log|logger)\.(?:info|warn|error|fatal|debug)\(/g)].map((match) => ({
       file: path.relative(SRC, file).replace(/\\/g, "/"),
-      args: callArguments(text, match.index! + match[0].length - 1),
+      args: callArguments(text, match.index + match[0].length - 1),
     }));
   });
 
@@ -72,7 +72,7 @@ describe("logging rule: what may be logged (docs/security.md)", () => {
 
     expect(occurrences.length).toBeGreaterThan(0);
     for (const match of occurrences) {
-      expect(answerUseCase.slice(Math.max(0, match.index! - 80), match.index!)).toMatch(/logQuestions/);
+      expect(answerUseCase.slice(Math.max(0, match.index - 80), match.index)).toMatch(/logQuestions/);
     }
   });
 });

@@ -5,20 +5,13 @@ import { collectDiagnostics } from "../infrastructure/diagnostics/collect-diagno
 import { openDatabaseReadOnly } from "../infrastructure/sqlite/database.js";
 import { APPLICATION_VERSION } from "../shared/version.js";
 import { DIAGNOSTICS_USAGE, formatDiagnostics, parseDiagnosticsArgs } from "./diagnostics-cli.js";
-import { runCli } from "./run-cli.js";
+import { printUsage, runCli } from "./run-cli.js";
 
 /** `npm run diagnostics [-- --json]`: a safe, read-only summary for bug reports. Exit code 1 only when it cannot read the database at all. */
 async function main() {
   const command = parseDiagnosticsArgs(process.argv.slice(2));
 
-  if (command.kind === "help") {
-    console.log(DIAGNOSTICS_USAGE);
-    return 0;
-  }
-  if (command.kind === "error") {
-    console.error(`${command.message}\n\n${DIAGNOSTICS_USAGE}`);
-    return 1;
-  }
+  if (command.kind !== "run") return printUsage(command, DIAGNOSTICS_USAGE);
 
   const config = loadToolConfig();
   const db = openDatabaseReadOnly(config.storage.sqlitePath, { requireCurrentSchema: false });

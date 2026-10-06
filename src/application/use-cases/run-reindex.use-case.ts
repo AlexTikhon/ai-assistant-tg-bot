@@ -50,7 +50,7 @@ export type ReindexRequest = {
 };
 
 /** A document that differs from the active recipe, and what this run does about it (null: nothing). */
-export type StaleDocument = {
+type StaleDocument = {
   documentId: string;
   fileName: string;
   reasons: StaleReason[];

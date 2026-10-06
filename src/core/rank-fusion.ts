@@ -13,7 +13,7 @@ export const DEFAULT_RRF_K = 60;
 /** How much each ranking contributes. 1 / 1 is plain RRF. */
 export type FusionWeights = { semantic: number; lexical: number };
 
-export const EQUAL_WEIGHTS: FusionWeights = { semantic: 1, lexical: 1 };
+const EQUAL_WEIGHTS: FusionWeights = { semantic: 1, lexical: 1 };
 
 /**
  * Reciprocal Rank Fusion: score(chunk) = sum over rankings of weight / (k + rank). Plain RRF (the default)

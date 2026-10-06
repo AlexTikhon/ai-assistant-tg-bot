@@ -1,3 +1,4 @@
+import { describeErrorSafely } from "../shared/scrub.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import type { BackupManifest } from "../infrastructure/backup/manifest.js";
@@ -30,14 +31,13 @@ and runs the integrity checks of \`npm run integrity\` on the copy. Exit code 1 
 export type BackupCommand = { kind: "run"; output: string | undefined; allowIncomplete?: boolean } | { kind: "help" } | { kind: "error"; message: string };
 export type VerifyCommand = { kind: "run"; directory: string; allowIncomplete?: boolean } | { kind: "help" } | { kind: "error"; message: string };
 
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export function parseBackupArgs(argv: string[]): BackupCommand {
   try {
     const { values } = parseArgs({ args: argv, options: { output: { type: "string" }, "allow-incomplete": { type: "boolean" }, help: { type: "boolean" } }, strict: true, allowPositionals: false });
     return values.help ? { kind: "help" } : { kind: "run", output: values.output, ...(values["allow-incomplete"] ? { allowIncomplete: true } : {}) };
   } catch (error) {
-    return { kind: "error", message: messageOf(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 }
 
@@ -48,7 +48,7 @@ export function parseVerifyArgs(argv: string[]): VerifyCommand {
     if (positionals.length !== 1) return { kind: "error", message: "Give exactly one backup directory." };
     return { kind: "run", directory: positionals[0], ...(values["allow-incomplete"] ? { allowIncomplete: true } : {}) };
   } catch (error) {
-    return { kind: "error", message: messageOf(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 }
 

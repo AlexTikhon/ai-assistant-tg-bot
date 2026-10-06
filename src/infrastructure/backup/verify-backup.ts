@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ActiveRecipe } from "../../application/assess-index.js";

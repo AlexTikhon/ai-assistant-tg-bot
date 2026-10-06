@@ -1,3 +1,4 @@
+import { describeErrorSafely } from "../shared/scrub.js";
 import { parseArgs } from "node:util";
 import type { ConfidencePolicy } from "../core/retrieval-confidence.js";
 import type { EvalSettings } from "../eval/compare.js";
@@ -100,7 +101,7 @@ export function parseEvalArgs(argv: string[]): EvalCommand {
       allowPositionals: false,
     }));
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: describeErrorSafely(error) };
   }
 
   if (values.help) {

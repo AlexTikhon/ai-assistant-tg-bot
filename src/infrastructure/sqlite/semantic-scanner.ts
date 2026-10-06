@@ -23,7 +23,8 @@ export class SemanticScanner {
   constructor(private readonly databasePath: string, private readonly maxPending = 16) {}
 
   search(search: SimilaritySearch, signal?: AbortSignal): Promise<SemanticResult> {
-    signal?.throwIfAborted();
+    // A promise-returning function reports every failure as a rejection, an already-aborted signal included.
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.closed) return Promise.reject(new OperationCancelledError());
     if (this.pending.size >= this.maxPending) {
       return Promise.reject(new AppError("Search is busy. Please try again shortly.", "SEARCH_BUSY"));

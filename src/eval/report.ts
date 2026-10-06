@@ -104,7 +104,7 @@ function metricRows(metrics: AggregateMetrics, ks: readonly number[]) {
   ];
 }
 
-export const formatSettings = (settings: EvalSettings | EvalReport["settings"]) =>
+const formatSettings = (settings: EvalSettings | EvalReport["settings"]) =>
   Object.entries(settings)
     .filter(([, value]) => value !== undefined)
     .flatMap(([key, value]) =>

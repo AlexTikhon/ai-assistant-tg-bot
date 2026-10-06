@@ -40,9 +40,9 @@ Node.js **22.12+ or 24** (`.nvmrc`).
 ```bash
 git clone <repo> && cd <repo>
 npm ci
-npm run check                 # typecheck, tests, build, smoke - no credentials, no network
+npm run check                 # lint, typecheck, tests, build, smoke - no credentials, no network
 cp .env.example .env          # set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY
-npm start                     # node dist/index.js      (development: npm run dev)
+npm start                     # compiled code, stack traces mapped to the TypeScript source   (development: npm run dev)
 ```
 
 ## Docker
@@ -56,7 +56,7 @@ Multi-stage Debian-slim image, non-root user, production dependencies only, no s
 
 ## Bot commands
 
-`/start`, `/help` · `/list` (documents with id, size, date, state) · `/doc <id>` (details) · `/ask <question>` or plain text · `/summary <id>` · `/delete <id>` · `/replace <id>` (send the new file with the caption `/replace <id>`). Sending a file uploads it; a voice message asks a question.
+`/start`, `/help` · `/list` (documents with id, size, date, state) · `/doc <id>` (details) · `/ask <question>` or plain text · `/askdoc <id> <question>` (search only that document) · `/summary <id>` · `/delete <id>` · `/replace <id>` (send the new file with the caption `/replace <id>`). Sending a file uploads it; a voice message asks a question.
 
 ## Operating it
 
@@ -86,24 +86,25 @@ Copy `.env.example`; each command validates only what it uses.
 | `RETRIEVAL_CONFIDENCE_MODE` | `shadow` | `off`, `shadow`, `enforce` |
 | `MAX_UPLOAD_BYTES`, `MAX_DOCUMENTS_PER_USER`, `MAX_STORAGE_BYTES_PER_USER`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_PDF_PAGES` | 10 MB, 100, 200 MB, 2000, 1000 | bounds |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_MS` | `10` / `60000` | per user |
-| `LOG_LEVEL`, `LOG_QUESTIONS`, `RAG_DEBUG` | `info`, `false`, `false` | logging: [what may be logged](docs/security.md#what-may-be-logged) |
+| `LOG_LEVEL`, `LOG_QUESTIONS`, `RAG_DEBUG` | `info`, `false`, `false` | logging: [what may be logged](docs/security.md#what-may-be-logged). `LOG_QUESTIONS` writes question text to the log - development only, the bot warns at startup |
 
 Everything else (chunking, retrieval depth, thresholds, timeouts, feedback buttons): `.env.example`.
 
 ## Testing and evaluation
 
 ```bash
-npm run typecheck && npm test         # 1,300+ tests; real SQLite, no network, never OpenAI or Telegram
+npm run lint && npm run typecheck && npm test   # 1,400+ tests; real SQLite, no external network, never OpenAI or Telegram
 npm run smoke                         # the whole lifecycle through the compiled application, offline providers
 npm run smoke:cli                     # the operational commands from compiled code, without credentials
 npm run test:coverage                 # coverage as a diagnostic (no threshold)
+npm run check:release                 # check + retrieval regression gate + confidence report + runtime dependency audit
 npm run eval:retrieval                # Recall@K, MRR, answerability (offline, deterministic)
 npm run eval:confidence               # confidence-gate calibration on the calibration split
 npm run test:retrieval                # regression gate against eval/baseline.json
 npm run eval:retrieval:live           # real embeddings: prints the plan; costs money only with --confirm-spend
 ```
 
-CI (`.github/workflows/ci.yml`) runs the deterministic checks on Node 24 and 22, the Docker image checks and a dependency audit - no secrets. Offline numbers, method and limits: [docs/evaluation.md](docs/evaluation.md).
+CI (`.github/workflows/ci.yml`) runs lint and the deterministic checks on Node 24 and 22, the Docker image checks and a dependency audit - no secrets. Offline numbers, method and limits: [docs/evaluation.md](docs/evaluation.md).
 
 ## Project docs
 
@@ -116,3 +117,8 @@ CI (`.github/workflows/ci.yml`) runs the deterministic checks on Node 24 and 22,
 - No OCR (scanned PDFs are rejected); PDF citations use physical page indexes.
 - Single process (SQLite file, long polling); the rate limit is in memory and resets on restart.
 - Backups are not encrypted and contain every user's documents; the host is trusted storage ([threat model](docs/security.md)).
+- Logs identify a user by a per-process pseudonym (`u-1a2b3c4d`), not the Telegram id; it changes after a restart.
+
+### Possible next steps (not planned)
+
+Validating the confidence threshold on real embeddings and then enabling `enforce` · an approximate-nearest-neighbour index behind the `VectorStore` port · OCR for scanned PDFs · remembering a "current document" instead of passing its id to `/askdoc`.

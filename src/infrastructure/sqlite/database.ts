@@ -16,7 +16,7 @@ import type { MigrationContext } from "./migrations.js";
  *   cascade and the chunk-owner invariant (migration 9) depend on it.
  * - busy_timeout = 5000: a second process (a CLI tool next to the bot) waits up to 5 s for a lock instead of failing at once.
  */
-export const BUSY_TIMEOUT_MS = 5000;
+const BUSY_TIMEOUT_MS = 5000;
 
 export function applyWritablePragmas(db: Database.Database) {
   db.pragma("journal_mode = WAL");
@@ -111,7 +111,7 @@ const RECOVERY = "Do not delete it. Verify a backup with `npm run backup:verify 
 
 /** Recognises a SQLite failure that means "this file is not a usable database" and says what the operator can do. */
 export function classifyDatabaseError(error: unknown): DatabaseFailure {
-  const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code: unknown }).code) : "";
+  const code = typeof error === "object" && error !== null && "code" in error ? String((error).code) : "";
 
   if (code.startsWith("SQLITE_CORRUPT")) {
     return { kind: "corrupt", advice: `The database file is corrupt. ${RECOVERY}` };

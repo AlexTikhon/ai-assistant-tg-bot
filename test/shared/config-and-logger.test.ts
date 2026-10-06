@@ -116,19 +116,12 @@ describe("retrieval confidence settings", () => {
     expect(loadToolConfig({}).retrieval.confidence).toEqual(DEFAULT_CONFIDENCE_POLICY);
   });
 
-  it("can switch the gate off completely, which leaves no policy at all", () => {
-    const config = loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "false" });
-
-    expect(config.retrieval.confidence).toBeUndefined();
-  });
-
   it("rejects thresholds that cannot mean anything, naming the variable", () => {
     expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: "1.5" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE/);
     expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE: "high" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_SEMANTIC_SCORE/);
     expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: "-0.1" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE/);
     expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE: "1.2" })).toThrow(/RETRIEVAL_CONFIDENCE_MIN_TERM_COVERAGE/);
     expect(() => loadToolConfig({ RETRIEVAL_EXACT_TOKEN_BONUS: "-1" })).toThrow(/RETRIEVAL_EXACT_TOKEN_BONUS/);
-    expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "maybe" })).toThrow(/RETRIEVAL_CONFIDENCE_GATE/);
   });
 
   it("reports all invalid retrieval settings at once", () => {
@@ -186,12 +179,9 @@ describe("retrieval confidence rollout mode", () => {
     expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_MODE: "strict" })).toThrow(/RETRIEVAL_CONFIDENCE_MODE/);
   });
 
-  it("keeps the older RETRIEVAL_CONFIDENCE_GATE working when no mode is set: false is off, an explicit true is enforce", () => {
-    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "false" }).retrieval.confidenceMode).toBe("off");
-    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "true" }).retrieval.confidenceMode).toBe("enforce");
-  });
-
-  it("the mode wins over the older switch", () => {
-    expect(loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: "false", RETRIEVAL_CONFIDENCE_MODE: "shadow" }).retrieval.confidenceMode).toBe("shadow");
+  it("rejects the removed RETRIEVAL_CONFIDENCE_GATE with a pointer to the mode, instead of silently falling back to shadow", () => {
+    for (const value of ["true", "false"]) {
+      expect(() => loadToolConfig({ RETRIEVAL_CONFIDENCE_GATE: value })).toThrow(/RETRIEVAL_CONFIDENCE_GATE.*was removed.*RETRIEVAL_CONFIDENCE_MODE/);
+    }
   });
 });

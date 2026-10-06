@@ -1,7 +1,7 @@
 import { hashContent } from "../../core/content-hash.js";
 import { isSupportedFileName } from "../../core/document.js";
 import { normalizeDisplayFileName } from "../../core/file-validation.js";
-import { NotFoundError, ValidationError } from "../../shared/errors.js";
+import { fileTooLargeError, NotFoundError, ValidationError } from "../../shared/errors.js";
 import { KeyedMutex } from "../../shared/keyed-mutex.js";
 import { logger } from "../../shared/logger.js";
 import { describeDocumentIndex } from "../describe-document-index.js";
@@ -96,7 +96,7 @@ export class ReplaceDocumentUseCase {
       throw new ValidationError("The uploaded file is empty.");
     }
     if (input.data.byteLength > options.maxUploadBytes) {
-      throw new ValidationError(`The file is too large. The limit is ${Math.round((options.maxUploadBytes / (1024 * 1024)) * 10) / 10} MB.`);
+      throw fileTooLargeError(options.maxUploadBytes);
     }
 
     // Ownership first: nothing below runs for a document that is not the user's (or does not exist).

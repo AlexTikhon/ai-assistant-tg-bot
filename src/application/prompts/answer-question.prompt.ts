@@ -14,7 +14,7 @@ Rules:
 `.trim();
 
 /** Renders retrieved chunks as numbered, clearly delimited reference excerpts. */
-export function formatContext(chunks: RetrievedChunk[]) {
+function formatContext(chunks: RetrievedChunk[]) {
   return chunks
     .map((chunk, index) => `[${index + 1}] ${chunk.fileName}, ${formatSourceLocation(chunk)}\n${chunk.content}`)
     .join("\n\n---\n\n");

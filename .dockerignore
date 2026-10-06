@@ -35,7 +35,9 @@ test
 eval
 docs
 scripts
+eslint.config.js
 README.md
+CHANGELOG.md
 Dockerfile
 .dockerignore
 compose.yaml

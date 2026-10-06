@@ -31,9 +31,9 @@ describe("runtime contract", () => {
   });
 
   it("production start runs compiled JavaScript, never tsx or ts-node", () => {
-    expect(pkg.scripts.start).toBe("node dist/index.js");
+    expect(pkg.scripts.start).toBe("node --enable-source-maps dist/index.js"); // stack traces point at the TypeScript source
     expect(pkg.scripts.start).not.toMatch(/tsx|ts-node/);
-    expect(dockerfile).toMatch(/^CMD \["node", "dist\/index\.js"\]$/m);
+    expect(dockerfile).toMatch(/^CMD \["node", "--enable-source-maps", "dist\/index\.js"\]$/m);
     expect(pkg.dependencies).not.toHaveProperty("tsx");
   });
 
@@ -46,13 +46,18 @@ describe("runtime contract", () => {
     }
   });
 
-  it("the scripts that distinguish the lifecycle exist: dev, typecheck, test, build, start, smoke", () => {
-    for (const name of ["dev", "typecheck", "test", "build", "start", "smoke"]) expect(pkg.scripts).toHaveProperty(name);
+  it("the scripts that distinguish the lifecycle exist: dev, lint, typecheck, test, build, start, smoke", () => {
+    for (const name of ["dev", "lint", "typecheck", "test", "build", "start", "smoke"]) expect(pkg.scripts).toHaveProperty(name);
+  });
+
+  it("`npm run check` is the pre-push command (static checks first, then tests, build and smoke); the release check adds the retrieval regression and the audit", () => {
+    expect(pkg.scripts.check).toBe("npm run lint && npm run typecheck && npm test && npm run build && npm run smoke && npm run smoke:cli");
+    expect(pkg.scripts["check:release"]).toMatch(/^npm run check && npm run test:retrieval && npm run eval:retrieval && npm run eval:confidence && npm audit --omit=dev$/);
   });
 
   it("every compiled command file the scripts point to is a source file of the build", () => {
     for (const script of Object.values(pkg.scripts)) {
-      const target = /node dist\/(.+)\.js/.exec(script)?.[1];
+      const target = /node (?:--\S+ )*dist\/(.+)\.js/.exec(script)?.[1];
       if (target) expect(fs.existsSync(path.join(ROOT, "src", `${target}.ts`)), script).toBe(true);
     }
   });
@@ -106,6 +111,7 @@ describe(".dockerignore: the build context", () => {
   /** A small implementation of the .dockerignore rules this file uses: "**\/" any depth, "*" within a name, a directory excludes everything below it. */
   const patterns = read(".dockerignore").split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
   const regexFor = (pattern: string) =>
+  // eslint-disable-next-line no-control-regex -- the NUL placeholder is deliberate: it can never occur in a pattern
     new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*\//g, "\u0000").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\u0000/g, "(?:.*/)?")}$`);
   const ignored = (file: string) => {
     const parts = file.split("/");
@@ -184,7 +190,7 @@ describe("CI workflow", () => {
 
   it("runs the deterministic checks, in full, on every supported Node version", () => {
     const commands = commandsOf("verify");
-    for (const command of ["npm run typecheck", "npm run test", "npm run build", "npm run smoke", "npm run smoke:cli", "npm run test:retrieval", "npm run eval:retrieval", "npm run eval:confidence"]) {
+    for (const command of ["npm run lint", "npm run typecheck", "npm run test", "npm run build", "npm run smoke", "npm run smoke:cli", "npm run test:retrieval", "npm run eval:retrieval", "npm run eval:confidence"]) {
       expect(commands, command).toContain(command);
     }
   });
