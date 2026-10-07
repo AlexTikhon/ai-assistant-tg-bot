@@ -60,7 +60,13 @@ export function scrubDeep(value: unknown, depth = 0, seen = new WeakSet<object>(
       copy[key] = "[redacted]";
       continue;
     }
-    copy[key] = scrubDeep((value as Record<string, unknown>)[key], depth + 1, seen);
+    let property: unknown;
+    try {
+      property = (value as Record<string, unknown>)[key];
+    } catch {
+      property = "[unreadable]"; // a throwing getter must not turn a log line into an exception
+    }
+    copy[key] = scrubDeep(property, depth + 1, seen);
   }
   return copy;
 }

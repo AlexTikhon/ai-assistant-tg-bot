@@ -108,16 +108,19 @@ describe("scrubDeep and describeErrorSafely", () => {
 });
 
 describe("structured logs", () => {
-  it("an error's message, stack, properties and causes are scrubbed", () => {
-    const { logger, text } = capture();
-    const error = Object.assign(new Error(`failed with ${OPENAI_KEY}`, { cause: new Error(`GET ${FILE_URL}`) }), { url: FILE_URL, config: { headers: { Authorization: `Bearer ${OPENAI_KEY}` } } });
+  it("a secret in an error's message, stack, properties or causes never reaches the line - those are not copied at all", () => {
+    registerSecret("an-unusual-secret-value");
+    const { logger, lines, text } = capture();
+    const error = Object.assign(new Error(`failed with ${OPENAI_KEY} an-unusual-secret-value`, { cause: new Error(`GET ${FILE_URL}`) }), { url: FILE_URL, config: { headers: { Authorization: `Bearer ${OPENAI_KEY}` } } });
 
     logger.error({ err: error }, "Update failed");
 
     expect(text()).not.toContain(BOT_TOKEN);
     expect(text()).not.toContain(OPENAI_KEY);
     expect(text()).not.toContain("AbCdEfGhIjKlMnOpQrStUvWxYz");
-    expect(text()).toContain("[redacted");
+    expect(text()).not.toContain("an-unusual-secret-value");
+    expect(text()).not.toContain("[redacted"); // removed, not masked inside a retained payload
+    expect(lines[0].err).toEqual({ category: "unknown", type: "Error", cause: { category: "unknown", type: "Error" } });
   });
 
   it("any field of any log line is scrubbed, not only errors", () => {
@@ -163,12 +166,13 @@ describe("structured logs", () => {
     expect(lines[0]).not.toHaveProperty("user");
   });
 
-  it("the error serializer still produces the usual structure", () => {
-    const { logger, lines } = capture();
+  it("an error is logged as a small safe record - its type and category - not as message and stack", () => {
+    const { logger, lines, text } = capture();
 
     logger.error({ err: new TypeError("plain failure") }, "failed");
 
-    expect(lines[0].err).toMatchObject({ type: "TypeError", message: "plain failure" });
+    expect(lines[0].err).toEqual({ category: "unknown", type: "TypeError" });
+    expect(text()).not.toContain("plain failure");
   });
 });
 
@@ -218,9 +222,9 @@ describe("the Telegram file URL (it contains the bot token)", () => {
   const limits = { maxBytes: 1000, timeoutMs: 1000 };
   const retry = { sleep: async () => undefined, baseDelayMs: 1 };
 
-  it("a failed download tells the user a generic message and carries no URL; logging the cause scrubs the token", async () => {
+  it("a failed download tells the user a generic message and carries no URL; the log keeps the service and the kind of failure, not the URL", async () => {
     const failing = vi.fn().mockRejectedValue(new TypeError(`fetch failed: request to ${FILE_URL} failed, reason: socket hang up`));
-    const { logger, text } = capture();
+    const { logger, lines, text } = capture();
 
     const error = await downloadTelegramFile(ctx, "file-1", limits, { fetchImpl: failing as unknown as typeof fetch, retry }).catch((e: unknown) => e);
 
@@ -229,7 +233,9 @@ describe("the Telegram file URL (it contains the bot token)", () => {
     expect((error as Error).message).not.toContain(BOT_TOKEN);
     logger.error({ err: error }, "Update failed"); // what the error boundary does with it
     expect(text()).not.toContain(BOT_TOKEN);
-    expect(text()).toContain("[redacted-telegram-token]");
+    expect(text()).not.toContain("telegram.org");
+    expect(text()).not.toContain("socket hang up");
+    expect(lines[0].err).toMatchObject({ category: "external", service: "telegram", code: "EXTERNAL_SERVICE_ERROR", cause: { category: "unknown", type: "TypeError" } });
   });
 
   it("an HTTP error status is reported without the URL", async () => {

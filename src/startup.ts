@@ -1,4 +1,5 @@
 import type { Application } from "./composition-root.js";
+import { ConfigError } from "./config/config.js";
 import type { RunningApplication } from "./lifecycle.js";
 import { StartupError } from "./shared/errors.js";
 
@@ -34,7 +35,9 @@ export async function startBot<Config>(deps: Dependencies<Config>): Promise<Star
     config = deps.readConfig();
     log.info({ stage: "config" }, "Configuration valid");
   } catch (err) {
-    log.fatal({ stage: "config", err }, "Invalid configuration; the bot was not started");
+    // The names of the variables to fix come from the schema (ConfigError), never from the error's text, which the log does not carry.
+    const invalidVariables = err instanceof ConfigError ? { invalidVariables: err.variables } : {};
+    log.fatal({ stage: "config", err, ...invalidVariables }, "Invalid configuration; the bot was not started");
     return { exitCode: 1 };
   }
 

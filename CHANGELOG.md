@@ -17,6 +17,7 @@ A Telegram bot that answers questions from a user's own PDF, Markdown and text f
 - Durable Telegram update admission: each accepted private update is claimed in SQLite before any work, so a redelivery after a restart or crash never repeats provider calls, mutations or replies (at-most-one handler admission, 48-hour retention). Interrupted updates are deliberately not replayed; this is not exactly-once delivery.
 - Integrity check with safe repair, verified backup and restore, diagnostics, SQLite maintenance, graceful shutdown, quotas, rate limits, retries and cancellation.
 - Docker image (non-root, one data volume) and GitHub Actions CI with no secrets.
+- Errors are logged as a bounded, content-free record (category, known code, status, service, Telegram method, retry delay, a depth-limited cause chain) - never a message, stack, request payload or Telegram description, so a failed send cannot copy an answer or chat id into the log. Cyclic or hostile errors cannot break logging.
 - Logs identify users by a per-process pseudonym, never by Telegram id; `LOG_QUESTIONS` is development-only and announces itself at startup.
 
 **Quality**

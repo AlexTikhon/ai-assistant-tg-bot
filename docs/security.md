@@ -27,12 +27,26 @@ One rule for every log line. Logs are structured JSON and are meant to be sharea
 | document id, a per-process pseudonym of the Telegram user id (`user: "u-1a2b3c4d"`), the request id | the Telegram user id itself, the text of questions (only the length; the text only with the explicit development switch `LOG_QUESTIONS=true`, which is announced by a startup warning) |
 | durations, counts (chunks, requests, files), ranks, scores | answers, summaries, voice transcripts |
 | index health states, confidence decisions and their numbers | chunk text, document content, captions |
-| error categories and messages (scrubbed) | embeddings / vectors |
+| error **categories and known codes** (`err`: category, error class, status, service, Telegram method, retry delay - see below) | an error's message, stack, request or response payload, headers, URLs, or any other property; embeddings / vectors |
 | the confidence mode, versions, schema version | API keys, tokens, authorization headers, Telegram file URLs (they contain the token) |
 
 **User ids in logs.** The logger rewrites a `userId` field to `user`: `u-` plus 8 hex characters of an HMAC-SHA-256 of the id under a random key that exists only in the process's memory. One user's lines can be correlated within a run; after a restart the same user gets a different pseudonym, and the Telegram id is never written. It is for correlation, not a security boundary (the id space is small, so whoever holds the key could test guesses), and nothing uses it for authorization: ownership checks work with the real id.
 
-How it is enforced: errors are serialized through the scrubber (message, stack, extra properties and causes), every other log field passes through it too (`formatters.log`), the configured secrets are registered by value, and a test scans every `log.*(...)` call in `src/` for forbidden field names. File names are metadata, not content, but they are user-chosen text: they are not part of routine log lines (they appear in operator tool output such as `integrity`, which a person runs on their own machine). `npm run diagnostics` prints no file name, user id, document text, secret or full path at all.
+**Errors in logs.** An error object is not a log record: a Telegraf `TelegramError` carries the outgoing message (the answer) and the chat id, providers echo input in their descriptions, and any `message` or `stack` may repeat user text. Masking secrets inside such text does not make it safe, so none of it is copied. The `err` field of a log line is a small projection (`src/shared/safe-error.ts`) made only of values from a finite vocabulary or range-checked numbers:
+
+| Field | Value |
+| --- | --- |
+| `category` | `application`, `external`, `network`, `storage`, `startup`, `cancellation` or `unknown` |
+| `type` | a known error class name (`TelegramError`, `ExternalServiceError`, `SqliteError`, `TypeError`, ...; otherwise `Error`), or the kind of a thrown non-error (`string`, `object`, ...) |
+| `code` | only a *known* code: this application's own (`VALIDATION_ERROR`, `SEARCH_BUSY`, ...), a SQLite code (`SQLITE_FULL`), a network or file-system code (`ECONNRESET`, `ENOSPC`) or a provider condition (`rate_limit_exceeded`). An unrecognised code is dropped, however much it looks like a code |
+| `service`, `method` | the provider of an `ExternalServiceError` (`openai`, `telegram`, `embeddings`, `search`) and the Bot API method a `TelegramError` was calling (only the methods this application uses) |
+| `status`, `retryAfterSec` | an HTTP/Telegram status of 100-599 and a provider-requested wait of at most a day |
+| `stage`, `reason` | the startup stage (`config`, `database`, `storage`) and why an operation was cancelled (`timeout`, `shutdown`) |
+| `cause` | the same record for the error's cause, at most five levels deep; `{"truncated":"cycle"}` or `{"truncated":"depth"}` where the chain loops or ends |
+
+Everything else is left out, not shortened: messages (including the user-facing message of an `AppError`), stacks, request and response bodies, Telegram descriptions and `on.payload`, headers, URLs, paths and every other property. The projection reads data properties only - it never calls a getter, `toJSON` or `toString` and never enumerates an object - so a cyclic, very deep, huge or hostile error costs a bounded amount of work and cannot make a log call throw. This holds at every log level and with `LOG_QUESTIONS=true`: that switch adds the question text to one line and does not change how errors are written. Startup failures stay actionable without free text: an invalid configuration logs `invalidVariables` (the names of the variables, taken from the schema, never their values), a database failure logs its `stage`, the operator's `advice` and the category and known code of its cause. To diagnose a failure with more detail, reproduce it locally; the operator command-line tools have their own, separate output (`docs/operations.md`).
+
+How it is enforced: errors are reduced to safe facts by one serializer (below), every other log field passes through the scrubber (`formatters.log`), the configured secrets are registered by value, and a test scans every `log.*(...)` call in `src/` for forbidden field names. File names are metadata, not content, but they are user-chosen text: they are not part of routine log lines (they appear in operator tool output such as `integrity`, which a person runs on their own machine). `npm run diagnostics` prints no file name, user id, document text, secret or full path at all.
 
 ## Files, symlinks and permissions
 

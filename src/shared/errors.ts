@@ -1,5 +1,23 @@
 import { formatMegabytes } from "./utils/text.js";
 
+/** Every code an AppError can carry. A closed list: the log writes a code only when it is one of these (see safe-error.ts). */
+export const APP_ERROR_CODES = [
+  "APP_ERROR",
+  "VALIDATION_ERROR",
+  "NOT_FOUND",
+  "INDEX_CHANGED",
+  "EXTERNAL_SERVICE_ERROR",
+  "RATE_LIMITED",
+  "UPDATE_ADMISSION_FAILED",
+  "SEARCH_BUSY",
+  "OPERATION_CANCELLED",
+] as const;
+export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
+
+/** The upstream services an ExternalServiceError can be about. */
+export const EXTERNAL_SERVICES = ["openai", "telegram", "embeddings", "search"] as const;
+export type ExternalService = (typeof EXTERNAL_SERVICES)[number];
+
 /**
  * Expected application failures.
  *
@@ -9,7 +27,7 @@ import { formatMegabytes } from "./utils/text.js";
 export class AppError extends Error {
   constructor(
     message: string,
-    public readonly code: string = "APP_ERROR",
+    public readonly code: AppErrorCode = "APP_ERROR",
     options?: ErrorOptions,
   ) {
     super(message, options);
@@ -58,7 +76,7 @@ export class StartupError extends Error {
 /** An upstream provider (OpenAI, Telegram file API) failed, timed out or answered garbage. */
 export class ExternalServiceError extends AppError {
   constructor(
-    public readonly service: string,
+    public readonly service: ExternalService,
     options?: ErrorOptions,
     message = "The AI service is temporarily unavailable. Please try again in a moment.",
   ) {

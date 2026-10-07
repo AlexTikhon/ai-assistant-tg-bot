@@ -28,7 +28,7 @@ npm start                    # node --enable-source-maps dist/index.js - compile
 | `lint`, `typecheck`, `test`, `test:coverage` | development checks (ESLint with typescript-eslint, tsc, vitest) | eslint, tsc, vitest |
 | `check`, `check:release` | the pre-push command; the release check adds the retrieval regression gate, the confidence report and the runtime audit | npm scripts |
 | `build` | compile to `dist/` (cleans it first) | tsc |
-| `start` | the bot (`--enable-source-maps`: stack traces in the log name the TypeScript file and line; the maps hold no source text) | `node --enable-source-maps dist/index.js` |
+| `start` | the bot (`--enable-source-maps`: stack traces Node prints for a crash name the TypeScript file and line; the maps hold no source text. Log lines carry no stack: an `err` is only a category and known codes, see [security.md](security.md)) | `node --enable-source-maps dist/index.js` |
 | `smoke` | can this build start with its local infrastructure? (real SQLite, FTS5, retrieval, use cases, backup, restore; offline providers) | `node dist/cli/smoke.js` |
 | `smoke:cli` | do the operational commands work from compiled code without credentials? | `node dist/cli/smoke-cli.js` |
 | `integrity`, `backup`, `backup:verify`, `restore`, `diagnostics`, `db:maintenance`, `reindex` | operational commands | `node dist/cli/<name>.js` |
@@ -77,7 +77,7 @@ The bot is one process doing Telegram long polling. It has no HTTP port, and add
 | Question | Signal |
 | --- | --- |
 | Is the process alive? | `docker ps` / `systemctl status` (a crash exits non-zero; use `--restart unless-stopped`) |
-| Is the configuration valid? | `"stage":"config"` - "Configuration valid" (else a fatal line listing every invalid variable, exit 1) |
+| Is the configuration valid? | `"stage":"config"` - "Configuration valid" (else a fatal line whose `invalidVariables` lists the name of every missing or invalid variable - never a value - exit 1) |
 | Is the database initialized? | `"stage":"database"` - "Database ready" with `schemaVersion` and the application `version` (a failed migration or a damaged file is fatal, with `advice`) |
 | Is storage ready? | `"stage":"storage"` - "Storage ready" (the data directory must be readable and writable) |
 | Which confidence mode? | `"stage":"retrieval"` - "Retrieval confidence gate: shadow" (`confidenceMode` field; never any question text) |

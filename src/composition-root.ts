@@ -110,7 +110,9 @@ function createStorage(settings: StorageSettings) {
   try {
     const damage = quickCheck(db);
     if (damage.length > 0) {
-      throw new StartupError("database", new Error(`The database failed SQLite's structural check: ${damage[0]}`), classifyDatabaseError({ code: "SQLITE_CORRUPT" }).advice);
+      // The code is what the log keeps of this error (its message quotes SQLite's report); the advice says what to do.
+      const failure = Object.assign(new Error(`The database failed SQLite's structural check: ${damage[0]}`), { code: "SQLITE_CORRUPT" });
+      throw new StartupError("database", failure, classifyDatabaseError(failure).advice);
     }
     return {
       db,

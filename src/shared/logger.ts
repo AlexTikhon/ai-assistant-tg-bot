@@ -2,18 +2,31 @@ import { createHmac, randomBytes } from "node:crypto";
 import pino from "pino";
 import type { DestinationStream } from "pino";
 import { currentRequestId } from "./request-context.js";
+import { toSafeError } from "./safe-error.js";
+import type { SafeError, TruncatedCause } from "./safe-error.js";
 import { scrubDeep, scrubSecrets } from "./scrub.js";
 
 // The one definition of what a secret looks like lives in scrub.ts; it is re-exported here for the code that already imports it from the logger.
 export { scrubSecrets };
 
-type SerializedError = { type?: string; message?: string; stack?: string; cause?: unknown; [key: string]: unknown };
+/**
+ * What a log line says about an error: the bounded, content-free projection of safe-error.ts (category, known type/code/service/
+ * method, status, retry delay, cause chain) - never the message, stack or any other property. The projection is scrubbed as well,
+ * as defense in depth; it cannot throw, and neither can this.
+ */
+function serializeError(error: unknown): unknown {
+  try {
+    return scrubChain(toSafeError(error));
+  } catch {
+    return { category: "unknown", type: "unserializable" };
+  }
+}
 
-/** Serializes an error for the log with every string in it (message, stack, extra properties such as a url) scrubbed, causes included. */
-function scrubError(error: unknown): unknown {
-  const serialized = scrubDeep(pino.stdSerializers.err(error as Error)) as SerializedError;
-  if (error instanceof Error && error.cause !== undefined) serialized.cause = scrubError(error.cause);
-  return serialized;
+/** scrubDeep for a record and its cause chain, one level at a time (scrubDeep alone would cut a chain off at its own depth limit). */
+function scrubChain(record: SafeError | TruncatedCause): SafeError | TruncatedCause {
+  if (!("category" in record)) return record;
+  const { cause, ...fields } = record;
+  return { ...(scrubDeep(fields) as Omit<SafeError, "cause">), ...(cause === undefined ? {} : { cause: scrubChain(cause) }) };
 }
 
 // Random per process and never written anywhere: a pseudonym is stable while the process runs and different after a restart.
@@ -36,14 +49,15 @@ export function pseudonymizeUserId(userId: string | number) {
  * categories - never question or answer text, document or chunk text, embeddings, tokens or keys.
  * Lines logged inside a Telegram update also carry its `requestId`.
  * A `userId` field is never written as it is: the line carries `user` (see pseudonymizeUserId) instead.
- * Errors go under the `err` key so they are serialized (and scrubbed) consistently.
+ * Errors go under the `err` key so they are reduced to safe facts consistently: an error's message, stack, payload and other
+ * properties are never written (not even with LOG_QUESTIONS), only its category and known codes - see safe-error.ts.
  */
 export function createLogger(destination?: DestinationStream, level = process.env.LOG_LEVEL ?? "info") {
   return pino(
     {
       level,
-      serializers: { err: scrubError },
-      // Whatever is logged, strings that look like a token or a key never reach the output. (Errors are scrubbed by their serializer above.)
+      serializers: { err: serializeError },
+      // Whatever is logged, strings that look like a token or a key never reach the output. (Errors are reduced to safe facts by their serializer above.)
       formatters: {
         log: ({ err, userId, ...fields }: Record<string, unknown>) => ({
           ...(scrubDeep(fields) as Record<string, unknown>),

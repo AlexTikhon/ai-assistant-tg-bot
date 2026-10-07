@@ -9,7 +9,24 @@ const booleanFlag = z
   .transform((value) => value === "true");
 
 type EnvSource = Record<string, string | undefined>;
-type SectionResult<T> = { ok: true; value: T } | { ok: false; issues: string[] };
+type Issues = { messages: string[]; variables: string[] };
+type SectionResult<T> = { ok: true; value: T } | ({ ok: false } & Issues);
+
+/**
+ * An invalid or incomplete environment. The message lists every problem for a person reading it (the command-line tools print it);
+ * `variables` is the trusted part: the names of the variables concerned, taken from the schema and never from the environment's
+ * values, so a log can say what to fix without repeating anything that was entered.
+ */
+export class ConfigError extends Error {
+  readonly stage = "config";
+  constructor(
+    message: string,
+    readonly variables: readonly string[],
+  ) {
+    super(message);
+    this.name = "ConfigError";
+  }
+}
 
 /**
  * One independently validated slice of the environment. Every entry point loads only the sections it
@@ -24,7 +41,8 @@ function section<S extends z.ZodType, T>(schema: S, build: (env: z.output<S>) =>
     }
     return {
       ok: false,
-      issues: parsed.error.issues.map((issue) => `${issue.path.join(".") || "env"}: ${issue.message}`),
+      messages: parsed.error.issues.map((issue) => `${issue.path.join(".") || "env"}: ${issue.message}`),
+      variables: parsed.error.issues.flatMap((issue) => (typeof issue.path[0] === "string" ? [issue.path[0]] : [])),
     };
   };
 
@@ -33,15 +51,15 @@ function section<S extends z.ZodType, T>(schema: S, build: (env: z.output<S>) =>
     load(source: EnvSource = process.env): T {
       const result = tryLoad(source);
       if (!result.ok) {
-        throw configError(result.issues);
+        throw configError(result);
       }
       return result.value;
     },
   };
 }
 
-function configError(issues: string[]) {
-  return new Error(`Invalid configuration:\n- ${issues.join("\n- ")}`);
+function configError({ messages, variables }: Issues) {
+  return new ConfigError(`Invalid configuration:\n- ${messages.join("\n- ")}`, [...new Set(variables)]);
 }
 
 /** Environment and storage locations. Needed by every command that opens the database. */
@@ -197,9 +215,10 @@ const diagnosticsConfig = section(
  * (a variable read by two sections is reported once).
  */
 function collect<R extends Record<string, SectionResult<unknown>>>(sections: R) {
-  const issues = [...new Set(Object.values(sections).flatMap((result) => (result.ok ? [] : result.issues)))];
-  if (issues.length > 0) {
-    throw configError(issues);
+  const failures = Object.values(sections).flatMap((result) => (result.ok ? [] : [result]));
+  const messages = [...new Set(failures.flatMap((result) => result.messages))];
+  if (messages.length > 0) {
+    throw configError({ messages, variables: failures.flatMap((result) => result.variables) });
   }
   const values = Object.entries(sections).map(([name, result]) => [name, (result as { value: unknown }).value]);
   return Object.fromEntries(values) as { [K in keyof R]: R[K] extends SectionResult<infer T> ? T : never };

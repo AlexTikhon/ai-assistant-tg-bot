@@ -40,7 +40,7 @@ const stateOf = (updateId: number) => db.prepare("SELECT state, error_category A
 describe("terminal state from the actual outcome of the chain", () => {
   it.each([
     ["returned normally", async () => undefined, { state: "completed", category: null }],
-    ["a user-facing AppError", async () => { throw new AppError("shown to the user", "X"); }, { state: "completed", category: "rejected" }],
+    ["a user-facing AppError", async () => { throw new AppError("shown to the user", "VALIDATION_ERROR"); }, { state: "completed", category: "rejected" }],
     ["an ExternalServiceError", async () => { throw new ExternalServiceError("openai"); }, { state: "failed", category: "external" }],
     ["any other error", async () => { throw new Error(SECRET); }, { state: "failed", category: "internal" }],
     ["an OperationCancelledError that escaped", async () => { throw new OperationCancelledError(undefined, "shutdown"); }, { state: "interrupted", category: "shutdown" }],

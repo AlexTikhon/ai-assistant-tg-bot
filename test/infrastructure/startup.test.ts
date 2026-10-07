@@ -1,5 +1,8 @@
+import { TelegramError } from "telegraf";
 import { describe, expect, it, vi } from "vitest";
 import type { Application } from "../../src/composition-root.js";
+import { loadConfig } from "../../src/config/config.js";
+import { createLogger } from "../../src/shared/logger.js";
 import { startApplication } from "../../src/lifecycle.js";
 import type { RunningApplication } from "../../src/lifecycle.js";
 import { StartupError } from "../../src/shared/errors.js";
@@ -150,6 +153,72 @@ describe("startBot: failures stop the start and leave nothing running", () => {
 
     expect((await startBot(deps)).exitCode).toBe(0);
     expect(entries.some((entry) => entry.level === "warn" && entry.fields.stage === "startup-check")).toBe(true);
+  });
+});
+
+describe("startBot: failures stay actionable in a content-free log", () => {
+  const SENTINEL = "SYNTHETIC_PRIVATE_VALUE_DO_NOT_LOG";
+
+  function realLog() {
+    const lines: Array<Record<string, any>> = [];
+    const logger = createLogger({ write: (line: string) => void lines.push(JSON.parse(line)) }, "info");
+    return { lines, log: { info: logger.info.bind(logger), warn: logger.warn.bind(logger), fatal: logger.fatal.bind(logger) }, text: () => JSON.stringify(lines) };
+  }
+
+  it("invalid configuration names every missing or invalid variable - and none of their values", async () => {
+    const { deps } = setup({ readConfig: () => loadConfig({ CHUNK_SIZE: SENTINEL, RETRIEVAL_CONFIDENCE_MODE: SENTINEL, RAG_DEBUG: SENTINEL }) });
+    const { lines, log, text } = realLog();
+
+    const result = await startBot({ ...deps, log });
+
+    expect(result.exitCode).toBe(1);
+    const fatal = lines.at(-1)!;
+    expect(fatal).toMatchObject({ level: 60, stage: "config", err: { category: "startup", type: "ConfigError", stage: "config" } });
+    expect(fatal.invalidVariables).toEqual(expect.arrayContaining(["TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY", "CHUNK_SIZE", "RETRIEVAL_CONFIDENCE_MODE", "RAG_DEBUG"]));
+    expect(text()).not.toContain(SENTINEL);
+    expect(text()).not.toContain("Invalid configuration:");
+  });
+
+  it("a configuration error that is not one of ours is logged by kind only", async () => {
+    const { deps } = setup({ readConfig: () => { throw new Error(`TELEGRAM_BOT_TOKEN=${SENTINEL}`); } });
+    const { lines, log, text } = realLog();
+
+    expect((await startBot({ ...deps, log })).exitCode).toBe(1);
+
+    expect(lines.at(-1)).toMatchObject({ stage: "config", err: { category: "unknown", type: "Error" } });
+    expect(lines.at(-1)).not.toHaveProperty("invalidVariables");
+    expect(text()).not.toContain(SENTINEL);
+  });
+
+  it("a database failure keeps its stage, the operator's advice and the safe category and code of its cause - not the cause's text", async () => {
+    const sqlite = Object.assign(new Error(`file is not a database: /home/${SENTINEL}/app.db`), { name: "SqliteError", code: "SQLITE_NOTADB" });
+    const { deps, app } = setup({ createApplication: () => { throw new StartupError("database", sqlite, "The database file is corrupt. Restore a verified backup (npm run restore)."); } });
+    const { lines, log, text } = realLog();
+
+    const result = await startBot({ ...deps, log });
+
+    expect(result.exitCode).toBe(1);
+    expect(lines.at(-1)).toMatchObject({
+      level: 60,
+      stage: "database",
+      advice: "The database file is corrupt. Restore a verified backup (npm run restore).",
+      err: { category: "startup", type: "StartupError", stage: "database", cause: { category: "storage", type: "SqliteError", code: "SQLITE_NOTADB" } },
+    });
+    expect(text()).not.toContain(SENTINEL);
+    expect(app.close).not.toHaveBeenCalled(); // nothing was opened
+  });
+
+  it("a Telegram connection failure still closes the database once, logs the stage and keeps the safe facts", async () => {
+    const { deps, app, bot } = setup();
+    const { lines, log, text } = realLog();
+    bot.telegram.setMyCommands.mockRejectedValue(new TelegramError({ error_code: 401, description: `Unauthorized ${SENTINEL}` }, { method: "setMyCommands", payload: { commands: SENTINEL } }));
+
+    const result = await startBot({ ...deps, log });
+
+    expect(result.exitCode).toBe(1);
+    expect(app.close).toHaveBeenCalledOnce();
+    expect(lines.at(-1)).toMatchObject({ stage: "telegram", err: { category: "external", service: "telegram", method: "setMyCommands", status: 401 } });
+    expect(text()).not.toContain(SENTINEL);
   });
 });
 
