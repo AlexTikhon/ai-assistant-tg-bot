@@ -44,6 +44,10 @@ How it is enforced: errors are serialized through the scrubber (message, stack, 
 
 The optional 👍/👎 (`FEEDBACK_BUTTONS`) stores one small row per rating: the short request id, the user, the rating, a timestamp and the confidence gate's labels and one score - **no text**. The table has no foreign key to documents or chunks, so deleting a document can never leave a dangling reference (a test pins the columns and that). There is no retention job: the rows are tiny (about 150 bytes each) and exist to calibrate the gate; delete them with SQL if you do not want them.
 
+## Update claim storage
+
+`telegram_update_claims` stores only the bot's public id, Telegram's `update_id`, a state, two timestamps and an allowlisted category (`rejected`, `external`, `internal`, `timeout`, `shutdown`, `recovered`) - never a chat or user id, message text, answer, token or error message; a database `CHECK` enforces the allowlist. Rows are removed 48 hours after they become terminal. Log lines about claims carry ids, states and an error *code* (such as `SQLITE_FULL`), never an error text.
+
 ## Reporting
 
 Please report a vulnerability privately to the repository owner rather than in a public issue.

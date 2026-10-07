@@ -357,6 +357,28 @@ export const migrations: Migration[] = [
       db.exec("ALTER TABLE documents ADD COLUMN index_revision INTEGER NOT NULL DEFAULT 1 CHECK (index_revision > 0)");
     },
   },
+  {
+    version: 11,
+    name: "durable Telegram update claims (at-most-one handler admission per bot and update id)",
+    up(db) {
+      // Metadata only: no chat, user, text or error message. (bot_id, update_id) is the identity; timestamps are epoch milliseconds
+      // of OUR clock (claim / terminal / recovery time), never Telegram's. Terminal rows are removed after the retention horizon;
+      // running rows are never removed, only recovered to "interrupted" when the bot application starts.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS telegram_update_claims (
+          bot_id INTEGER NOT NULL CHECK (bot_id > 0),
+          update_id INTEGER NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('running', 'completed', 'failed', 'interrupted')),
+          claimed_at INTEGER NOT NULL,
+          terminal_at INTEGER,
+          error_category TEXT CHECK (error_category IS NULL OR error_category IN ('rejected', 'external', 'internal', 'timeout', 'shutdown', 'recovered')),
+          PRIMARY KEY (bot_id, update_id),
+          CHECK ((state = 'running') = (terminal_at IS NULL))
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_update_claims_terminal ON telegram_update_claims(terminal_at);
+      `);
+    },
+  },
 ];
 
 /** What in the existing data the version-9 constraints would reject, described for the operator (counts and opaque ids only). */

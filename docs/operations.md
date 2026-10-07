@@ -122,7 +122,7 @@ npm run restore -- --from ./backups/before-upgrade --replace-existing         # 
 npm run restore -- --from ./backups/before-upgrade --target /srv/other-data   # restore somewhere else
 ```
 
-Stop the bot first. Options: `--target <dir>` (default `DATA_DIR`), `--replace-existing` (required when the target holds data), `--discard-previous` (with `--replace-existing`: delete the replaced installation afterwards), `--dry-run`. It is scriptable (no prompt); exit code 0 on success, 1 when the restore did not happen - and then the live installation is exactly as it was.
+Stop the bot first. A restore replaces the update-claim ledger with the backup's: updates handled after the backup was taken are no longer remembered, so if Telegram still redelivers them they run again. Options: `--target <dir>` (default `DATA_DIR`), `--replace-existing` (required when the target holds data), `--discard-previous` (with `--replace-existing`: delete the replaced installation afterwards), `--dry-run`. It is scriptable (no prompt); exit code 0 on success, 1 when the restore did not happen - and then the live installation is exactly as it was.
 
 **What it does, in this order, stopping at the first failure:**
 
@@ -147,6 +147,10 @@ A **failure** (an error) before step 3 is rolled back by the restore itself. A *
 **The replaced installation is kept**, not deleted: `.restore-previous-<time>-<id>/` holds its database snapshot and its files (for an unreadable database: the file as it was, plus its `-wal`/`-shm`, as evidence). It contains user documents; delete it yourself once the restored data is checked (`integrity` reminds you with a `previous-installation` warning; it never removes it).
 
 A restore never calls any provider and needs no credentials.
+
+## Duplicate updates, crashes and restarts
+
+Telegram only stops redelivering an update once the next `getUpdates` call carries a higher offset, so after a crash some already-handled updates can arrive again. The bot records every accepted private update in `telegram_update_claims` before doing any work and never runs the same `(bot id, update id)` twice within 48 hours. After a crash, or a shutdown that cancelled work, the claims still `running` are marked `interrupted` at the next start (log line "Update claims recovered", with counts) and stay suppressed: **a message that was in flight when the bot died may be lost, and some of its effects (an OpenAI call, an indexed document, even the reply) may already have happened. Ask the user to send it again.** This is at-most-one *handler admission*, not exactly-once delivery, and it assumes one bot process per database. Details: [architecture.md](architecture.md#update-admission-durable-claims).
 
 ## Integrity, repair and maintenance
 
@@ -245,8 +249,8 @@ Migrations only move forward. A database written by a newer version is refused (
 | | |
 | --- | --- |
 | **Detection** | `docker stop` -> "Shutting down" ... "Shutdown complete"; `docker start` -> the same stage lines |
-| **Application / CLI** | SIGTERM: stop polling, finish updates in flight (max 15 s), close the database (the WAL is checkpointed). On start: the volume's `app.db` opens (a crash-time WAL is replayed by SQLite), pending migrations (none) are skipped, `quick_check` passes, the startup check summarises the data (outdated indexes, missing originals, orphans), polling resumes |
-| **DB effect** | none (a newer release's migrations run once, in transactions, if any) |
+| **Application / CLI** | SIGTERM: stop polling, finish updates in flight (max 15 s), close the database (the WAL is checkpointed). On start: the volume's `app.db` opens (a crash-time WAL is replayed by SQLite), pending migrations (none) are skipped, `quick_check` passes, the startup check summarises the data (outdated indexes, missing originals, orphans), polling resumes. Claims a crash left `running` become `interrupted` first, and those updates are not replayed |
+| **DB effect** | none (a newer release's migrations run once, in transactions, if any); update claims older than 48 h are removed in bounded batches |
 | **Filesystem effect** | none; the same `files/` is used |
 | **Operator / user sees** | the bot answers again; `/list` shows the same documents; the rate limiter (in memory) starts fresh |
 | **If the data is wrong** | the startup check warns with counts and points at `npm run integrity`; a damaged file stops the start (scenario C) |

@@ -1,6 +1,7 @@
 import type { Telegraf } from "telegraf";
 import type { RateLimiter } from "../shared/rate-limiter.js";
 import type { SpeechToText } from "../application/ports/speech-to-text.js";
+import type { UpdateClaimStore } from "../application/ports/update-claims.js";
 import type { AnswerQuestionUseCase } from "../application/use-cases/answer-question.use-case.js";
 import type { DeleteDocumentUseCase } from "../application/use-cases/delete-document.use-case.js";
 import type { GetDocumentUseCase } from "../application/use-cases/get-document.use-case.js";
@@ -25,6 +26,7 @@ import { errorBoundary, logUnhandledError, privateChatOnly, requestContext, requ
 import { createRateLimitMiddleware } from "./rate-limit.js";
 import { Operations } from "../shared/operation.js";
 import { createOperationMiddleware } from "./operation.js";
+import { createUpdateClaimMiddleware } from "./update-claims.js";
 
 export type TelegramDependencies = {
   ingestDocument: IngestDocumentUseCase;
@@ -41,11 +43,19 @@ export type TelegramDependencies = {
   /** When present, answers get thumbs-up/down buttons and their presses are recorded. Off by default. */
   feedback?: RecordFeedbackUseCase;
   operations?: Operations;
+  /** Durable admission of updates: every accepted private update is claimed here before any work (see update-claims.ts). */
+  updateClaims: UpdateClaimStore;
 };
 
 /** Routes Telegram updates to handlers. Contains no business logic and creates no dependencies. */
 export function registerHandlers(bot: Telegraf, deps: TelegramDependencies, timeoutMs = 300_000) {
-  bot.use(requestContext, requestLogger, errorBoundary, privateChatOnly, createOperationMiddleware(deps.operations ?? new Operations(), timeoutMs));
+  // Order matters: the private-chat gate first (shared chats are never claimed or processed), then the durable claim, and only then
+  // the deadline, rate limiting, routing and every provider call, mutation and reply.
+  bot.use(
+    requestContext, requestLogger, errorBoundary, privateChatOnly,
+    createUpdateClaimMiddleware({ store: deps.updateClaims }),
+    createOperationMiddleware(deps.operations ?? new Operations(), timeoutMs),
+  );
   bot.catch(logUnhandledError);
 
   // Only handlers that cost OpenAI money are limited; /list, /delete and /help stay free.

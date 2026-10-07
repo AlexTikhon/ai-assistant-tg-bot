@@ -6,7 +6,11 @@ type OperationContext = { signal: AbortSignal; tasks: Set<Promise<unknown>> };
 const context = new AsyncLocalStorage<OperationContext>();
 
 export class OperationCancelledError extends AppError {
-  constructor(message = "This request took too long and was cancelled. Please try a smaller request.") {
+  constructor(
+    message = "This request took too long and was cancelled. Please try a smaller request.",
+    /** Why it was cancelled: its deadline passed, or the application is shutting down. */
+    readonly kind: "timeout" | "shutdown" = "timeout",
+  ) {
     super(message, "OPERATION_CANCELLED");
   }
 }
@@ -44,7 +48,7 @@ export class Operations {
   get activeCount() { return this.active.size; }
 
   async run<T>(timeoutMs: number, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    if (this.stopping) throw new OperationCancelledError("The bot is restarting. Please try again shortly.");
+    if (this.stopping) throw new OperationCancelledError("The bot is restarting. Please try again shortly.", "shutdown");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new OperationCancelledError()), timeoutMs);
     const scope: OperationContext = { signal: controller.signal, tasks: new Set() };
@@ -67,7 +71,7 @@ export class Operations {
   async shutdown(): Promise<void> {
     this.stopping = true;
     for (const controller of this.active.keys()) {
-      controller.abort(new OperationCancelledError("The bot is restarting. Please try again shortly."));
+      controller.abort(new OperationCancelledError("The bot is restarting. Please try again shortly.", "shutdown"));
     }
     await Promise.allSettled([...this.active.values()]);
   }

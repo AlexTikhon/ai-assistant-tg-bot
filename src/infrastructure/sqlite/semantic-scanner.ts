@@ -25,7 +25,7 @@ export class SemanticScanner {
   search(search: SimilaritySearch, signal?: AbortSignal): Promise<SemanticResult> {
     // A promise-returning function reports every failure as a rejection, an already-aborted signal included.
     if (signal?.aborted) return Promise.reject(signal.reason);
-    if (this.closed) return Promise.reject(new OperationCancelledError());
+    if (this.closed) return Promise.reject(new OperationCancelledError(undefined, "shutdown"));
     if (this.pending.size >= this.maxPending) {
       return Promise.reject(new AppError("Search is busy. Please try again shortly.", "SEARCH_BUSY"));
     }
@@ -47,7 +47,7 @@ export class SemanticScanner {
       this.closed = true;
       for (const [id, job] of this.pending) {
         Atomics.store(job.flag, 0, 1);
-        this.finish(id, undefined, new OperationCancelledError());
+        this.finish(id, undefined, new OperationCancelledError(undefined, "shutdown"));
       }
       await this.worker?.terminate();
       this.worker = undefined;

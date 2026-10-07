@@ -42,6 +42,8 @@ import { APPLICATION_VERSION } from "./shared/version.js";
 import { createBot } from "./telegram/bot.js";
 import { Operations } from "./shared/operation.js";
 import { SemanticScanner } from "./infrastructure/sqlite/semantic-scanner.js";
+import { SqliteUpdateClaimStore } from "./infrastructure/sqlite/sqlite-update-claims.js";
+import { recoverUpdateClaims } from "./telegram/update-claims.js";
 
 export type Application = {
   bot: Telegraf;
@@ -229,11 +231,20 @@ export function createApplication(
   config: AppConfig,
   providers: Providers = createOpenAiProviders(config),
   telegram?: Parameters<typeof createBot>[3],
+  options: { now?: () => number } = {},
 ): Application {
   const core = createCore(config, providers);
   const operations = new Operations();
 
   try {
+    // Bot application only (never createCore, so CLI tools and smoke runs cannot touch it): claims left running by a previous process
+    // become interrupted before this one can receive anything.
+    const updateClaims = new SqliteUpdateClaimStore(core.db, options);
+    try {
+      recoverUpdateClaims(updateClaims);
+    } catch (error) {
+      throw new StartupError("database", error);
+    }
     const bot = createBot(config.telegram.botToken, config.telegram.handlerTimeoutMs, {
       ...core.useCases,
       speechToText: providers.speechToText,
@@ -241,10 +252,13 @@ export function createApplication(
       rateLimiter: new RateLimiter({ limit: config.rateLimit.requests, windowMs: config.rateLimit.windowMs }),
       feedback: config.feedbackButtons ? new RecordFeedbackUseCase({ store: new SqliteFeedbackStore(core.db), outcomes: core.outcomes }) : undefined,
       operations,
+      updateClaims,
     }, telegram);
 
     return {
-      bot, readiness: core.readiness, startupCheck: core.startupCheck, close: core.close,
+      bot, readiness: core.readiness, startupCheck: core.startupCheck,
+      // The ledger stops touching SQLite first: an update that finishes after this point leaves its claim exactly as it is.
+      close: () => { updateClaims.close(); core.close(); },
       drain: async () => { await operations.shutdown(); await core.drain(); },
     };
   } catch (error) {

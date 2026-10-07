@@ -112,13 +112,38 @@ test/                   Vitest suites using fakes for the ports and in-memory SQ
 ## Request flow
 
 1. Telegraf receives an update; `requestContext` gives it a short opaque request id (8 random hex characters, never derived from user content) that the logger adds to every line logged while it is handled - handler, retrieval, generation, ingestion, feedback. `requestLogger` and `errorBoundary` wrap every handler.
-2. `privateChatOnly` refuses shared chats and callbacks before document access or provider calls. Private updates run within an `Operations` deadline scope; handlers that call OpenAI (`/ask`, `/askdoc`, plain text, `/summary`, uploads, voice) also pass the per-user rate limit.
+2. `privateChatOnly` refuses shared chats and callbacks before document access or provider calls. An accepted private update is then **claimed durably** (see [Update admission](#update-admission-durable-claims)) and runs within an `Operations` deadline scope; handlers that call OpenAI (`/ask`, `/askdoc`, plain text, `/summary`, uploads, voice) also pass the per-user rate limit - after the claim, so a redelivery never repeats a rate-limit reply either.
 3. A handler reads Telegram specifics (user id, command arguments, file ids), calls one use case, and formats the result as plain text, split into several messages if it exceeds Telegram's limit.
 4. `errorBoundary` replies with the message of an `AppError` (written for users) or a generic message for anything unexpected. Technical details are logged, never sent.
 
 `HANDLER_TIMEOUT_MS` is an application deadline. Its `AbortSignal` follows the request through downloads, extraction and providers; embedding batches and summary calls check it between requests. SQLite mutations check cancellation immediately before publishing. A timeout sends one safe response and refuses later handler replies. Shutdown aborts updates and joins middleware, adapter cleanup and any file write/compensation already in progress before closing storage. Synchronous parsing/chunking still requires the existing input bounds; JavaScript timers cannot interrupt synchronous CPU work.
 
 Semantic scanning runs in one worker thread against a read-only SQLite connection, with at most 16 queued/running jobs. Cancelled jobs remain counted until the worker acknowledges them. Scoring still costs O(ND), but top-K selection retains O(K) candidates and costs O(N log K); it does not sort or retain every qualifying match. Ranking and user/model/document filters match the in-process implementation used by evaluation fixtures. The `VectorStore` port remains the seam for ANN search if corpus size outgrows these bounds.
+
+## Update admission (durable claims)
+
+Telegram long polling confirms an update by sending a higher `offset` with the *next* `getUpdates` call. Telegraf handles a batch concurrently, so a crash can leave an update that was fully handled (answered, charged, mutated) still unconfirmed; Telegram then redelivers it, and without a durable record the bot would do all of it again. The offset is a transport acknowledgement; it says nothing about what the application already did. The claim ledger (`telegram_update_claims`, migration 11) is the application's own record.
+
+**Contract: at-most-one handler admission.** Within the 48-hour retention horizon, the same `(bot_id, update_id)` is admitted to business work once - across sequential and concurrent duplicates, process restarts and crashes. It is **not** exactly-once delivery: SQLite cannot commit together with OpenAI, Telegram or the file system, so after a crash nobody can know which external effects happened (the provider may have been called and charged, the document may be indexed, the reply may have been delivered). Replaying would risk doing them twice; the conservative policy is to never replay.
+
+| Claim state | Meaning |
+| --- | --- |
+| `running` | claimed by this process, handler chain in flight |
+| `completed` | the chain returned, or ended in a handled user-facing outcome (a rate-limit rejection, "Document not found", invalid input: category `rejected`) - its reply was the outcome |
+| `failed` | an unexpected error (`internal`) or a provider outage (`external`); the user got the safe error reply |
+| `interrupted` | the deadline passed (`timeout`), shutdown cancelled it (`shutdown`), or the process died while it was `running` and startup recovered it (`recovered`) |
+
+**Admission.** `INSERT ... ON CONFLICT (bot_id, update_id) DO NOTHING`: one statement, the primary key decides the winner, no read-then-insert window. Only the winner continues; a duplicate in *any* state does no business work and sends nothing (silent suppression). The one exception is a duplicate **callback query** of a finished update: it gets an empty `answerCallbackQuery` so the button's spinner stops (no rating is recorded, nothing is edited); a duplicate of a still-`running` callback gets nothing, because the winner answers it. The critical section is that one short synchronous statement - the ledger is not a queue, not per-user serialization and not provider admission control: different updates run concurrently.
+
+**Placement.** `requestContext -> requestLogger -> errorBoundary -> privateChatOnly -> claim -> operation deadline -> rate limit / routing / handler`. Shared chats are refused before they are claimed (their content is never processed just to be deduplicated). Private updates nothing routes (a sticker, an edited message) are claimed and completed as no-ops. If the claim cannot be written, nothing runs (fail closed): the user gets a safe "try again" notice.
+
+**Terminal state** is written once, by the claim middleware, from the actual outcome (table above), with `WHERE state = 'running'`: an adapter that ignored cancellation and finishes later cannot overwrite or reopen anything, and after `close()` the ledger never touches SQLite again. If the terminal write itself fails, the claim is **not deleted**: it stays `running` (still suppressing) and the next startup marks it `interrupted`.
+
+**Identity.** `bot_id` is the bot's public Telegram id (from `getMe`), not the token or anything derived from it, so a rotated token keeps the same namespace; the same `update_id` of two bots is independent. `update_id` must be a safe integer (anything else is refused, never coerced) and is not treated as a high-water mark.
+
+**Recovery and retention.** In `createApplication` - bot startup only, never `createCore` or a CLI tool that opens the database - every claim still `running` becomes `interrupted` with a fresh terminal time, before the bot can receive anything; expired rows are then removed in bounded batches (500 per batch, at most 20 at startup, and one batch after every 256 admitted claims; no timer). Terminal and recovered claims are kept for **48 hours** from the time they became terminal (our clock, not Telegram's), longer than Telegram keeps unconsumed updates. `running` rows are never deleted by age.
+
+**What this deliberately costs.** An interrupted update is lost: after a crash, or a shutdown that cancelled work, the user must send the message again (a new message has a new `update_id`). **Single process:** startup recovery assumes one live bot process per database (as the deployment already requires for long polling); with two replicas sharing a database it would interrupt the other's live claims. A restore replaces the ledger with the backup's, so updates handled after the backup could be repeated if Telegram still redelivers them. The table holds identity, state, timestamps and an allowlisted category only: no chat or user id, text, answer, token or error message.
 
 ## Document lifecycle
 
@@ -272,6 +297,7 @@ Retried: 429, 408, 5xx (except 501/505), network resets and timeouts. Never retr
 | `document_chunks` | Chunk text, embedding (float32 BLOB), `embedding_model`, `embedding_dim`, optional provenance (`page_start` / `page_end`, `page_label_start` / `page_label_end`, `section_path` as a JSON list of headings); stable integer key `seq`; `UNIQUE (document_id, chunk_index)`; `ON DELETE CASCADE` |
 | `chunk_fts` | FTS5 external-content index over `document_chunks.content` (`unicode61`, diacritics folded), kept in sync by triggers |
 | `answer_feedback` | Optional thumbs-up/down: request id, user, rating, and the confidence decision of that answer (labels and one number - no text) |
+| `telegram_update_claims` | Durable update admission: `(bot_id, update_id)` primary key, state, claim / terminal times (epoch ms), allowlisted category - no content (see [Update admission](#update-admission-durable-claims)) |
 
 Migrations use `PRAGMA user_version` (`src/infrastructure/sqlite/migrations.ts`); each runs in its own transaction; a database written by a newer version is refused.
 
@@ -286,6 +312,8 @@ Migrations use `PRAGMA user_version` (`src/infrastructure/sqlite/migrations.ts`)
 | 7 | `documents.content_hash` (unknown for existing rows), `document_version` (1), `updated_at`, `previous_content_hash`; non-unique index `(user_id, content_hash)` - **no data rewritten, no file read** |
 | 8 | `answer_feedback` table |
 | 9 | composite foreign key making a chunk's owner its document's owner, `CHECK`s on chunk position and dimension; the chunk table is rebuilt (same `seq` values, sequence preserved), the FTS triggers are recreated and the index rebuilt. It **refuses** (changing nothing, naming the documents) when existing data would violate the constraints - ownership is never guessed |
+| 10 | `documents.index_revision`: fences index publication against concurrent content and index changes |
+| 11 | `telegram_update_claims` (+ index on the terminal time): at-most-one handler admission per `(bot_id, update_id)`, see [Update admission](#update-admission-durable-claims) |
 
 **Vector BLOB format** (`src/core/vectors.ts`): the IEEE-754 binary32 value of every dimension, 4 bytes each, **little-endian**, no header; the dimension is in `embedding_dim`. Values that do not fit float32 are rejected like `NaN`/`Infinity`. Scanning float32 blobs instead of JSON text cut a 5000 x 1536 scan from ~264 ms to ~46-75 ms and vectors are ~5x smaller. The scan is still brute force over the user's chunks - fine for thousands of chunks; the `VectorStore` port is the seam for an ANN index later.
 
