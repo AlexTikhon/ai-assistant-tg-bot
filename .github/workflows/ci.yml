@@ -79,7 +79,7 @@ jobs:
         run: npm run test:coverage
       - name: Summary
         run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage
@@ -104,7 +104,7 @@ jobs:
           mkdir bundle
           cp -r dist package.json package-lock.json README.md docs bundle/
           tar -czf telegram-rag-bot-bundle.tgz -C bundle .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: runtime-bundle
           path: telegram-rag-bot-bundle.tgz
