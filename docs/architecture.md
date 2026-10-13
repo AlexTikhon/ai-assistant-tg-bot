@@ -4,7 +4,7 @@ Dependencies point inwards: the application layer only knows ports (interfaces),
 
 ```mermaid
 flowchart TB
-  TG([Telegram]) --> AD["telegram/ adapter<br/>handlers, middleware, rate limit"]
+  TG([Telegram]) --> AD["telegram/ adapter<br/>handlers, middleware, rate limit, admission"]
   AD --> UC["Application use cases<br/>ingest, replace, answer, list, doc, delete, summarize"]
   UC --> RP["Retrieval policy<br/>confidence gate (off / shadow / enforce), context selection"]
   RP --> HR["Hybrid retriever<br/>reciprocal rank fusion + exact tokens"]
@@ -101,7 +101,7 @@ src/
   eval/                 evaluation: metrics, answerability, calibration, dataset, harness, runner, comparison,
                         baseline, report, export, diff, live-run plan, benchmark
   telegram/             bot factory, routing, handlers, middleware (errors, rate limit), downloads, UI text
-  shared/               logger (+ request ids), the secret scrubber, errors, rate limiter, keyed mutex, bounded retry, version, permissions, small utilities
+  shared/               logger (+ request ids), the secret scrubber, errors, rate limiter, workload limiter, keyed mutex, bounded retry, version, permissions, small utilities
 eval/                   fixture corpus, questions (JSONL, versioned), comparison grids, baseline minimums, offline embedding lexicon
 docs/                   this file, rag.md, evaluation.md, operations.md (run, Docker, backup/restore, scenarios), security.md (threat model, logging rule)
 test/                   Vitest suites using fakes for the ports and in-memory SQLite
@@ -112,9 +112,22 @@ test/                   Vitest suites using fakes for the ports and in-memory SQ
 ## Request flow
 
 1. Telegraf receives an update; `requestContext` gives it a short opaque request id (8 random hex characters, never derived from user content) that the logger adds to every line logged while it is handled - handler, retrieval, generation, ingestion, feedback. `requestLogger` and `errorBoundary` wrap every handler.
-2. `privateChatOnly` refuses shared chats and callbacks before document access or provider calls. An accepted private update is then **claimed durably** (see [Update admission](#update-admission-durable-claims)) and runs within an `Operations` deadline scope; handlers that call OpenAI (`/ask`, `/askdoc`, plain text, `/summary`, uploads, voice) also pass the per-user rate limit - after the claim, so a redelivery never repeats a rate-limit reply either.
+2. `privateChatOnly` refuses shared chats and callbacks before document access or provider calls. An accepted private update is then **claimed durably** (see [Update admission](#update-admission-durable-claims)) and runs within an `Operations` deadline scope; handlers that call OpenAI (`/ask`, `/askdoc`, plain text, `/summary`, uploads, voice) also pass the per-user rate limit and then **bounded admission** (see [Expensive-request admission](#expensive-request-admission)) - after the claim, so a redelivery never repeats a rate-limit or busy reply either.
 3. A handler reads Telegram specifics (user id, command arguments, file ids), calls one use case, and formats the result as plain text, split into several messages if it exceeds Telegram's limit.
 4. `errorBoundary` replies with the message of an `AppError` (written for users) or a generic message for anything unexpected. Technical details are logged, never sent.
+
+### Expensive-request admission
+
+One process-wide `WorkloadLimiter` (`src/shared/workload-limiter.ts`) bounds how many expensive requests run at once: `MAX_ACTIVE_EXPENSIVE_REQUESTS` overall (default 8) and `MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER` per user (default 2; never above the overall bound). The defaults are starting policy values, not a measured capacity. The same limiter guards every route that downloads, extracts, transcribes, embeds or generates - `/ask`, `/askdoc`, plain-text questions, `/summary`, document uploads and `/replace` uploads, and voice messages - through `telegram/workload-admission.ts`, placed after the rate check and before the handler. `/help`, `/start`, `/list`, `/doc`, `/delete`, `/replace` usage help, feedback buttons and unknown commands never take a slot.
+
+- **Fail fast, no queue.** A request that does not fit gets one `OverloadedError` message ("the bot is busy ... try again shortly") and starts nothing: no download, no provider call, no document change. The user sends it again. Waiting would only move the unbounded work into memory and time.
+- **One lease per handler.** A voice message that becomes a question, or an upload that becomes a replacement, holds one lease for the whole handler, never two.
+- **The lease follows the actual work, not the deadline.** It is released by `onOperationDrained` (`src/shared/operation.ts`) when the operation has drained: the handler has settled, its cleanup and compensation included, and every provider task it started through `operationStep` has settled - even a provider that ignores the abort signal. A request that timed out keeps its slot while that work is still running, so the bound holds for the work the process is really doing. Shutdown awaits the same drainage before storage is closed.
+- **No growth with history.** A user is remembered only while they hold a lease; idle entries are dropped.
+- **Ledger.** An overloaded update ends as a handled rejection (`completed` / `rejected`): a redelivery of that update stays suppressed and is not run later when capacity frees; the user's next message is a new update and may be admitted.
+- **Logs.** A refusal logs the category `workload-rejected`, which bound refused (`global` or `user`) and the active count, plus the existing `OVERLOADED` error code - no user id, text or payload.
+
+State is per process (a restart starts empty), matching the single-process deployment. The rate check runs first, so a refused request still counts toward the user's rate limit.
 
 `HANDLER_TIMEOUT_MS` is an application deadline. Its `AbortSignal` follows the request through downloads, extraction and providers; embedding batches and summary calls check it between requests. SQLite mutations check cancellation immediately before publishing. A timeout sends one safe response and refuses later handler replies. Shutdown aborts updates and joins middleware, adapter cleanup and any file write/compensation already in progress before closing storage. Synchronous parsing/chunking still requires the existing input bounds; JavaScript timers cannot interrupt synchronous CPU work.
 
@@ -129,13 +142,13 @@ Telegram long polling confirms an update by sending a higher `offset` with the *
 | Claim state | Meaning |
 | --- | --- |
 | `running` | claimed by this process, handler chain in flight |
-| `completed` | the chain returned, or ended in a handled user-facing outcome (a rate-limit rejection, "Document not found", invalid input: category `rejected`) - its reply was the outcome |
+| `completed` | the chain returned, or ended in a handled user-facing outcome (a rate-limit or busy rejection, "Document not found", invalid input: category `rejected`) - its reply was the outcome |
 | `failed` | an unexpected error (`internal`) or a provider outage (`external`); the user got the safe error reply |
 | `interrupted` | the deadline passed (`timeout`), shutdown cancelled it (`shutdown`), or the process died while it was `running` and startup recovered it (`recovered`) |
 
 **Admission.** `INSERT ... ON CONFLICT (bot_id, update_id) DO NOTHING`: one statement, the primary key decides the winner, no read-then-insert window. Only the winner continues; a duplicate in *any* state does no business work and sends nothing (silent suppression). The one exception is a duplicate **callback query** of a finished update: it gets an empty `answerCallbackQuery` so the button's spinner stops (no rating is recorded, nothing is edited); a duplicate of a still-`running` callback gets nothing, because the winner answers it. The critical section is that one short synchronous statement - the ledger is not a queue, not per-user serialization and not provider admission control: different updates run concurrently.
 
-**Placement.** `requestContext -> requestLogger -> errorBoundary -> privateChatOnly -> claim -> operation deadline -> rate limit / routing / handler`. Shared chats are refused before they are claimed (their content is never processed just to be deduplicated). Private updates nothing routes (a sticker, an edited message) are claimed and completed as no-ops. If the claim cannot be written, nothing runs (fail closed): the user gets a safe "try again" notice.
+**Placement.** `requestContext -> requestLogger -> errorBoundary -> privateChatOnly -> claim -> operation deadline -> routing -> rate limit -> workload admission -> handler`. Shared chats are refused before they are claimed (their content is never processed just to be deduplicated). Private updates nothing routes (a sticker, an edited message) are claimed and completed as no-ops. If the claim cannot be written, nothing runs (fail closed): the user gets a safe "try again" notice.
 
 **Terminal state** is written once, by the claim middleware, from the actual outcome (table above), with `WHERE state = 'running'`: an adapter that ignored cancellation and finishes later cannot overwrite or reopen anything, and after `close()` the ledger never touches SQLite again. If the terminal write itself fails, the claim is **not deleted**: it stays `running` (still suppressing) and the next startup marks it `interrupted`.
 
@@ -361,6 +374,7 @@ Documents are processed one at a time; one failure is recorded and the run conti
 | `MAX_PDF_PAGES` | 1000 | A PDF with more pages is refused before any text is extracted (a PDF of thousands of near-empty pages is small but slow to parse) |
 | Markdown headings with section labels | 5000 | Above this no section labels are produced (the document is indexed and cited by chunk number): labelling compares every chunk with every heading, and 480,000 headings in 2 MB took ~23 s of uninterrupted CPU |
 | `RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_MS` | 10 per 60 s | Sliding window per Telegram user, in memory, for questions, summaries, uploads and voice messages |
+| `MAX_ACTIVE_EXPENSIVE_REQUESTS` / `..._PER_USER` | 8 / 2 | Expensive requests running at once (overall / per user), in memory; excess is refused immediately, see [Expensive-request admission](#expensive-request-admission) |
 
 The rate limiter is in memory and per process on purpose (single-process long-polling bot, no Redis); it sits behind a small boundary (`src/shared/rate-limiter.ts`, injectable clock). Ingestion of one user is serialized; summaries are computed once per document at a time; everything else relies on SQLite transactions.
 

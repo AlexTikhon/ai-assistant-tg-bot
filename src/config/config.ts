@@ -193,15 +193,27 @@ const limitsConfig = section(
 
 /** Telegram delivery: the only section that needs the bot token. Loaded only when the bot starts. */
 export const telegramConfig = section(
-  z.object({
-    TELEGRAM_BOT_TOKEN: z.string().min(1),
-    HANDLER_TIMEOUT_MS: positiveInt(300_000),
-    RATE_LIMIT_REQUESTS: positiveInt(10),
-    RATE_LIMIT_WINDOW_MS: positiveInt(60_000),
-  }),
+  z
+    .object({
+      TELEGRAM_BOT_TOKEN: z.string().min(1),
+      HANDLER_TIMEOUT_MS: positiveInt(300_000),
+      RATE_LIMIT_REQUESTS: positiveInt(10),
+      RATE_LIMIT_WINDOW_MS: positiveInt(60_000),
+      /**
+       * Process-wide bound on expensive requests (questions, summaries, uploads, voice) running at once, and one user's share of it.
+       * Starting policy values, not a measured capacity: a request over either bound is answered "busy" immediately (no queue).
+       */
+      MAX_ACTIVE_EXPENSIVE_REQUESTS: positiveInt(8),
+      MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER: positiveInt(2),
+    })
+    .refine((env) => env.MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER <= env.MAX_ACTIVE_EXPENSIVE_REQUESTS, {
+      message: "MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER must not exceed MAX_ACTIVE_EXPENSIVE_REQUESTS",
+      path: ["MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER"],
+    }),
   (env) => ({
     telegram: { botToken: env.TELEGRAM_BOT_TOKEN, handlerTimeoutMs: env.HANDLER_TIMEOUT_MS },
     rateLimit: { requests: env.RATE_LIMIT_REQUESTS, windowMs: env.RATE_LIMIT_WINDOW_MS },
+    workload: { maxActive: env.MAX_ACTIVE_EXPENSIVE_REQUESTS, maxPerUser: env.MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER },
   }),
 );
 
@@ -299,6 +311,7 @@ export function loadConfig(source: EnvSource = process.env) {
     retrieval: config.retrieval,
     limits: config.limits,
     rateLimit: config.telegram.rateLimit,
+    workload: config.telegram.workload,
     logQuestions: config.diagnostics.logQuestions,
     ragDebug: config.diagnostics.ragDebug,
     feedbackButtons: config.diagnostics.feedbackButtons,

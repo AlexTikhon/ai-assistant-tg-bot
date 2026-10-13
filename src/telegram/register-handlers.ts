@@ -1,5 +1,7 @@
+import { Composer } from "telegraf";
 import type { Telegraf } from "telegraf";
 import type { RateLimiter } from "../shared/rate-limiter.js";
+import type { WorkloadLimiter } from "../shared/workload-limiter.js";
 import type { SpeechToText } from "../application/ports/speech-to-text.js";
 import type { UpdateClaimStore } from "../application/ports/update-claims.js";
 import type { AnswerQuestionUseCase } from "../application/use-cases/answer-question.use-case.js";
@@ -27,6 +29,7 @@ import { createRateLimitMiddleware } from "./rate-limit.js";
 import { Operations } from "../shared/operation.js";
 import { createOperationMiddleware } from "./operation.js";
 import { createUpdateClaimMiddleware } from "./update-claims.js";
+import { createWorkloadAdmissionMiddleware } from "./workload-admission.js";
 
 export type TelegramDependencies = {
   ingestDocument: IngestDocumentUseCase;
@@ -40,6 +43,8 @@ export type TelegramDependencies = {
   downloadLimits: DownloadLimits;
   /** Per-user limit shared by every handler that calls OpenAI. */
   rateLimiter: RateLimiter;
+  /** Process-wide and per-user bound on expensive requests running at once, shared by the same handlers (see workload-admission.ts). */
+  workload: WorkloadLimiter;
   /** When present, answers get thumbs-up/down buttons and their presses are recorded. Off by default. */
   feedback?: RecordFeedbackUseCase;
   operations?: Operations;
@@ -58,9 +63,16 @@ export function registerHandlers(bot: Telegraf, deps: TelegramDependencies, time
   );
   bot.catch(logUnhandledError);
 
-  // Only handlers that cost OpenAI money are limited; /list, /delete and /help stay free.
-  const limited = createRateLimitMiddleware(deps.rateLimiter);
-  const limitedText = createRateLimitMiddleware(deps.rateLimiter, { skipCommands: true });
+  // Only handlers that cost OpenAI money are limited; /list, /delete and /help stay free. Each expensive route passes the per-user
+  // rate check first (existing accounting), then process-wide admission, whose lease covers the whole handler and everything it started.
+  const limited = Composer.compose([
+    createRateLimitMiddleware(deps.rateLimiter),
+    createWorkloadAdmissionMiddleware(deps.workload),
+  ]);
+  const limitedText = Composer.compose([
+    createRateLimitMiddleware(deps.rateLimiter, { skipCommands: true }),
+    createWorkloadAdmissionMiddleware(deps.workload, { skipCommands: true }),
+  ]);
 
   bot.start(startHandler);
   bot.command("help", helpHandler);

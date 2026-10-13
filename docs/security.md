@@ -16,7 +16,7 @@ A small, honest description of what this bot protects, against whom, and how. It
 | **Secrets** | `TELEGRAM_BOT_TOKEN` and `OPENAI_API_KEY` are environment configuration only: not in the repository, the image, the database, backups or logs. Everything that prints (logs, startup errors, command-line tools) goes through one scrubber (`src/shared/scrub.ts`) that removes tokens, keys, bearer tokens, `NAME=value` lines and the exact configured values - including the token inside Telegram file URLs | the process environment is visible to whoever controls the host or the container runtime |
 | **Backups** | a backup is `app.db`, the stored files and a manifest - never `.env`, keys, tokens or logs. It **contains every user's documents**: keep it as protected as the data directory (it is created 0700/0600) | backups are not encrypted |
 | **Network** | the bot makes outbound calls to Telegram and OpenAI only; it listens on no port. Documents and questions leave the machine **only** as OpenAI requests (embeddings, chat, speech-to-text) | the evaluation, integrity, backup and restore tools never call a provider |
-| **Rate and cost abuse** | per-user rate limit and quotas, bounded retries, a concurrency guard per user | a determined user can still spend up to the limits |
+| **Rate and cost abuse** | per-user rate limit and quotas, bounded retries, a concurrency guard per user, and a process-wide plus per-user bound on expensive requests running at once (`MAX_ACTIVE_EXPENSIVE_REQUESTS`, refused immediately, slot held until the work really finished) | a determined user can still spend up to the limits; many accounts can still exhaust the process-wide bound and make the bot answer "busy" to others until their requests finish |
 
 ## What may be logged
 
@@ -38,7 +38,7 @@ One rule for every log line. Logs are structured JSON and are meant to be sharea
 | --- | --- |
 | `category` | `application`, `external`, `network`, `storage`, `startup`, `cancellation` or `unknown` |
 | `type` | a known error class name (`TelegramError`, `ExternalServiceError`, `SqliteError`, `TypeError`, ...; otherwise `Error`), or the kind of a thrown non-error (`string`, `object`, ...) |
-| `code` | only a *known* code: this application's own (`VALIDATION_ERROR`, `SEARCH_BUSY`, ...), a SQLite code (`SQLITE_FULL`), a network or file-system code (`ECONNRESET`, `ENOSPC`) or a provider condition (`rate_limit_exceeded`). An unrecognised code is dropped, however much it looks like a code |
+| `code` | only a *known* code: this application's own (`VALIDATION_ERROR`, `SEARCH_BUSY`, `OVERLOADED`, ...), a SQLite code (`SQLITE_FULL`), a network or file-system code (`ECONNRESET`, `ENOSPC`) or a provider condition (`rate_limit_exceeded`). An unrecognised code is dropped, however much it looks like a code |
 | `service`, `method` | the provider of an `ExternalServiceError` (`openai`, `telegram`, `embeddings`, `search`) and the Bot API method a `TelegramError` was calling (only the methods this application uses) |
 | `status`, `retryAfterSec` | an HTTP/Telegram status of 100-599 and a provider-requested wait of at most a day |
 | `stage`, `reason` | the startup stage (`config`, `database`, `storage`) and why an operation was cancelled (`timeout`, `shutdown`) |

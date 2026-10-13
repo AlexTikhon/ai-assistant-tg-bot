@@ -38,6 +38,7 @@ import { ensurePrivateDirectory } from "./shared/fs-permissions.js";
 import { KeyedMutex } from "./shared/keyed-mutex.js";
 import { logger } from "./shared/logger.js";
 import { RateLimiter } from "./shared/rate-limiter.js";
+import { WorkloadLimiter } from "./shared/workload-limiter.js";
 import { APPLICATION_VERSION } from "./shared/version.js";
 import { createBot } from "./telegram/bot.js";
 import { Operations } from "./shared/operation.js";
@@ -252,6 +253,7 @@ export function createApplication(
       speechToText: providers.speechToText,
       downloadLimits: { maxBytes: config.ingestion.maxUploadBytes, timeoutMs: config.ingestion.downloadTimeoutMs },
       rateLimiter: new RateLimiter({ limit: config.rateLimit.requests, windowMs: config.rateLimit.windowMs }),
+      workload: new WorkloadLimiter(config.workload),
       feedback: config.feedbackButtons ? new RecordFeedbackUseCase({ store: new SqliteFeedbackStore(core.db), outcomes: core.outcomes }) : undefined,
       operations,
       updateClaims,

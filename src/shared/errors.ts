@@ -10,6 +10,7 @@ export const APP_ERROR_CODES = [
   "RATE_LIMITED",
   "UPDATE_ADMISSION_FAILED",
   "SEARCH_BUSY",
+  "OVERLOADED",
   "OPERATION_CANCELLED",
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -81,6 +82,16 @@ export class ExternalServiceError extends AppError {
     message = "The AI service is temporarily unavailable. Please try again in a moment.",
   ) {
     super(message, "EXTERNAL_SERVICE_ERROR", options);
+  }
+}
+
+/**
+ * The whole bot, or this user's share of it, is already running as many expensive requests as it is configured to.
+ * Nothing was started for this update; the user can send it again in a little while.
+ */
+export class OverloadedError extends AppError {
+  constructor() {
+    super("The bot is busy with other requests right now. Please try again shortly.", "OVERLOADED");
   }
 }
 

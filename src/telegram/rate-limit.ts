@@ -1,6 +1,6 @@
 import type { Context, MiddlewareFn } from "telegraf";
 import type { RateLimiter } from "../shared/rate-limiter.js";
-import { getMessageText, requireUserId } from "./context.js";
+import { isCommandText, requireUserId } from "./context.js";
 
 /**
  * Middleware for the handlers that cost money (questions, summaries, uploads, voice): each call
@@ -14,7 +14,7 @@ export function createRateLimitMiddleware(
   options: { skipCommands?: boolean } = {},
 ): MiddlewareFn<Context> {
   return async (ctx, next) => {
-    if (!(options.skipCommands && getMessageText(ctx).startsWith("/"))) {
+    if (!(options.skipCommands && isCommandText(ctx))) {
       limiter.assertAllowed(requireUserId(ctx));
     }
     await next();

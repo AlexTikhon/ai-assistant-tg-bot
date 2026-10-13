@@ -51,7 +51,7 @@ or `docker compose up -d --build` (one service, the `.env` file, one named volum
 - **Image.** Multi-stage, `node:24-bookworm-slim` (Debian, not Alpine: `better-sqlite3` is a native module with prebuilt glibc binaries). Dependencies come from the lockfile (`npm ci`), TypeScript is compiled in the build stage and `npm prune --omit=dev` leaves production dependencies only. The final image holds `dist/`, `node_modules/` and `package.json` - no sources, tests, `.env`, data or secrets.
 - **User.** The process runs as the unprivileged `node` user, never root. The data directory `/data` is created owned by that user (mode 700).
 - **Secrets** are passed at run time (`--env-file`, `-e`, compose `env_file`). Nothing is baked into the image; `.dockerignore` keeps `.env*`, `data/`, `backups/` and logs out of the build context (a test checks it).
-- **Shutdown.** `docker stop` sends SIGTERM: the bot stops polling, aborts updates and provider calls, waits for actual middleware/adapter work and file cleanup, then closes storage. A stuck shutdown forces exit after 15 s (`--stop-timeout`/`stop_grace_period` 20 s leaves room). `--init` is recommended (zombie reaping) but not required.
+- **Shutdown.** `docker stop` sends SIGTERM: the bot stops polling, aborts updates and provider calls, waits for actual middleware/adapter work and file cleanup (including work that already timed out and still holds an expensive-request slot), then closes storage. A stuck shutdown forces exit after 15 s (`--stop-timeout`/`stop_grace_period` 20 s leaves room). `--init` is recommended (zombie reaping) but not required.
 - **Operational commands in the container:** `docker exec rag-bot node dist/cli/integrity.js`, `docker exec rag-bot node dist/cli/backup.js --output /backups/before-upgrade` (with `-v /srv/rag-backups:/backups` on the `docker run`), and so on. To run one against the volume while the bot is stopped:
   `docker run --rm -v rag-bot-data:/data telegram-rag-bot node dist/cli/diagnostics.js`.
 - **No HEALTHCHECK, deliberately.** See [Is it up?](#is-it-up-health-and-readiness).
@@ -151,6 +151,14 @@ A restore never calls any provider and needs no credentials.
 ## Duplicate updates, crashes and restarts
 
 Telegram only stops redelivering an update once the next `getUpdates` call carries a higher offset, so after a crash some already-handled updates can arrive again. The bot records every accepted private update in `telegram_update_claims` before doing any work and never runs the same `(bot id, update id)` twice within 48 hours. After a crash, or a shutdown that cancelled work, the claims still `running` are marked `interrupted` at the next start (log line "Update claims recovered", with counts) and stay suppressed: **a message that was in flight when the bot died may be lost, and some of its effects (an OpenAI call, an indexed document, even the reply) may already have happened. Ask the user to send it again.** This is at-most-one *handler admission*, not exactly-once delivery, and it assumes one bot process per database. Details: [architecture.md](architecture.md#update-admission-durable-claims).
+
+## Load and "busy" replies
+
+At most `MAX_ACTIVE_EXPENSIVE_REQUESTS` expensive requests (questions, summaries, uploads, replacements, voice messages) run at once, and at most `MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER` per user (defaults 8 and 2: starting values, not a measured capacity). A request over either bound is answered immediately with "The bot is busy ... Please try again shortly." and does nothing else; there is no queue. Cheap commands (`/help`, `/list`, `/doc`, `/delete`, feedback buttons) keep working.
+
+- **Seeing it.** The log line "Expensive request refused: the bot is at capacity" carries `category: workload-rejected`, `scope` (`global` or `user`) and the active count - no user id or content. The update is recorded as a handled rejection; it is not retried by the bot, and a redelivery of it stays suppressed.
+- **A slot is held until the work has really finished.** A request that hit `HANDLER_TIMEOUT_MS` already told its user "took too long", but if a provider call is still running (OpenAI clients may not stop at once) its slot stays occupied until that call returns. Many "busy" replies right after timeouts mean providers are slow, not that the limits are too small.
+- **Tuning.** Raise the overall bound only after checking provider rate limits and memory (a buffered upload is up to `MAX_UPLOAD_BYTES`); keep the per-user bound small. Both are read at startup; the counters are in memory and start empty after a restart.
 
 ## Integrity, repair and maintenance
 

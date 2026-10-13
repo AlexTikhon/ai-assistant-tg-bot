@@ -50,7 +50,7 @@ const KNOWN_TYPES = new Set([
   // JavaScript and the platform
   "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError", "AggregateError", "AbortError", "TimeoutError",
   // this application
-  "AppError", "ValidationError", "NotFoundError", "IndexChangedError", "ExternalServiceError", "RateLimitError", "OperationCancelledError", "StartupError", "ConfigError",
+  "AppError", "ValidationError", "NotFoundError", "IndexChangedError", "ExternalServiceError", "RateLimitError", "OverloadedError", "OperationCancelledError", "StartupError", "ConfigError",
   "HttpStatusError", "RestoreError", "VectorError", "InvalidUpdateIdentityError",
   // libraries
   "TelegramError", "SqliteError", "ZodError", "OpenAIError", "APIError", "APIConnectionError", "APIConnectionTimeoutError", "APIUserAbortError", "AuthenticationError",

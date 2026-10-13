@@ -16,6 +16,9 @@ export function getMessageText(ctx: Context) {
   return message && "text" in message ? message.text.trim() : "";
 }
 
+/** Whether the message text is a slash command (known or not); the plain-text question handler ignores these. */
+export const isCommandText = (ctx: Context) => getMessageText(ctx).startsWith("/");
+
 /** Whether the text is that command (also `/command@BotName`), with or without arguments. */
 export function hasCommand(text: string | undefined, command: string) {
   return text !== undefined && new RegExp(`^/${command}(?:@\\w+)?(?:\\s|$)`, "i").test(text.trim());

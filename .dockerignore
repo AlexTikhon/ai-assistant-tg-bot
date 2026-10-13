@@ -35,6 +35,7 @@ test
 eval
 docs
 scripts
+CLAUDE_CODE_NEXT_TASK.md
 eslint.config.js
 README.md
 CHANGELOG.md

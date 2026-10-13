@@ -86,6 +86,7 @@ Copy `.env.example`; each command validates only what it uses.
 | `RETRIEVAL_CONFIDENCE_MODE` | `shadow` | `off`, `shadow`, `enforce` |
 | `MAX_UPLOAD_BYTES`, `MAX_DOCUMENTS_PER_USER`, `MAX_STORAGE_BYTES_PER_USER`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_PDF_PAGES` | 10 MB, 100, 200 MB, 2000, 1000 | bounds |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_MS` | `10` / `60000` | per user |
+| `MAX_ACTIVE_EXPENSIVE_REQUESTS` / `MAX_ACTIVE_EXPENSIVE_REQUESTS_PER_USER` | `8` / `2` | expensive requests (questions, summaries, uploads, voice) running at once, overall and per user; more are refused immediately with a "busy" message (no queue). Starting values, not a measured capacity |
 | `LOG_LEVEL`, `LOG_QUESTIONS`, `RAG_DEBUG` | `info`, `false`, `false` | logging: [what may be logged](docs/security.md#what-may-be-logged). `LOG_QUESTIONS` writes question text to the log - development only, the bot warns at startup |
 
 Everything else (chunking, retrieval depth, thresholds, timeouts, feedback buttons): `.env.example`.
@@ -115,7 +116,7 @@ CI (`.github/workflows/ci.yml`) runs lint and the deterministic checks on Node 2
 - Semantic search scans one user's vectors in a bounded worker queue with O(K) candidate memory. `MAX_CHUNKS_PER_USER` defaults to 10,000; the `VectorStore` port is the seam for an ANN index if this scale is exceeded.
 - The confidence gate's similarity threshold (0.5) was calibrated on synthetic embeddings and is **not validated against real embeddings** - hence `shadow` by default.
 - No OCR (scanned PDFs are rejected); PDF citations use physical page indexes.
-- Single process (SQLite file, long polling); the rate limit is in memory and resets on restart.
+- Single process (SQLite file, long polling); the rate limit and the expensive-request limits are in memory and reset on restart. In a burst above `MAX_ACTIVE_EXPENSIVE_REQUESTS` users are told the bot is busy and must send again - there is no waiting queue.
 - Backups are not encrypted and contain every user's documents; the host is trusted storage ([threat model](docs/security.md)).
 - Logs identify a user by a per-process pseudonym (`u-1a2b3c4d`), not the Telegram id; it changes after a restart.
 
