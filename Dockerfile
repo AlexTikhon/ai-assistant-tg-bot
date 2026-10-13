@@ -8,7 +8,7 @@
 # The Node major version is the one the project is tested with (see "engines" in package.json and .github/workflows/ci.yml).
 
 # ---- build: all dependencies from the lockfile, compile TypeScript, then drop the development dependencies ----
-FROM node:24-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 WORKDIR /app
 
 # Only needed if no prebuilt better-sqlite3 binary exists for the platform (it then compiles); not part of the final image.
@@ -26,7 +26,7 @@ RUN npm run build \
     && npm cache clean --force
 
 # ---- runtime: compiled code and production dependencies only ----
-FROM node:24-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     DATA_DIR=/data
 WORKDIR /app
