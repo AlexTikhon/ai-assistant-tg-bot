@@ -18,10 +18,11 @@ function setup(overrides: { readConfig?: () => unknown; createApplication?: () =
   const events: string[] = [];
   let stopPolling: () => void = () => undefined;
   const bot = {
-    telegram: { setMyCommands: vi.fn(async () => true) },
+    telegram: { setMyCommands: vi.fn(async () => true), callApi: vi.fn(async (_method: string, _payload: unknown) => []) },
     // Like Telegraf: the polling promise settles when the bot is stopped.
     launch: vi.fn((onLaunch: () => void) => {
       onLaunch();
+      void bot.telegram.callApi("getUpdates", {});
       return new Promise<void>((resolve) => (stopPolling = resolve));
     }),
     stop: vi.fn(() => {
@@ -223,6 +224,16 @@ describe("startBot: failures stay actionable in a content-free log", () => {
 });
 
 describe("startBot: graceful shutdown still works", () => {
+  it("a signal during the startup diagnostic closes resources without starting Telegram or reporting ready", async () => {
+    const { deps, app, entries } = setup();
+    const controller = new AbortController();
+    app.startupCheck = async () => { controller.abort(); };
+    const result = await startBot({ ...deps, signal: controller.signal });
+    expect(result).toEqual({ exitCode: 0 });
+    expect(app.close).toHaveBeenCalledOnce();
+    expect(entries.some((entry) => entry.fields.stage === "ready")).toBe(false);
+  });
+
   it("stops the bot, waits for polling to end and then closes the database", async () => {
     const { deps, app, bot, events } = setup();
 

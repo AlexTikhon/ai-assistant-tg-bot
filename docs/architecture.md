@@ -275,6 +275,8 @@ A backup is a directory: `app.db`, `files/<stored name>` (every original the sna
 
 ## External calls
 
+Startup and shutdown have one lifecycle owner (`lifecycle.ts`): starting -> running -> stopping -> stopped. Signals are registered before the first asynchronous diagnostic in the entry point, and before command sync when `runApplication` is used directly. A signal during the diagnostic prevents Telegram startup. During command sync, identity lookup or webhook deletion, the Telegram adapter passes cancellation into the transport and checks it again after the await. Even a transport that ignores cancellation cannot resume into polling after shutdown. Readiness means the first `getUpdates` request has been issued; Telegraf's earlier `onLaunch` callback is not readiness and this is not proof of a successful Telegram response. The launch/polling promise and application drainage both settle before storage is closed. Startup failure uses the same cleanup owner, once; stuck shutdown still forces exit after 15 seconds.
+
 | Call | Retry | Why |
 | --- | --- | --- |
 | OpenAI embeddings and chat | SDK `maxRetries: 2` (429, 5xx, connection errors, honours `Retry-After`; never 4xx) | already bounded inside the client; wrapping it again would multiply paid calls |

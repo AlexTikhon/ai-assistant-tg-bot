@@ -1,6 +1,7 @@
 import type { Application } from "./composition-root.js";
 import { logger } from "./shared/logger.js";
-import { botCommands } from "./telegram/ui/commands.js";
+import { OperationCancelledError } from "./shared/operation.js";
+import { launchPolling } from "./telegram/polling.js";
 
 /** After this long a stuck shutdown (e.g. a hanging provider call) is abandoned. */
 const SHUTDOWN_TIMEOUT_MS = 15_000;
@@ -10,76 +11,100 @@ export type RunningApplication = {
   shutdown(reason: string, exitCode?: number): Promise<void>;
 };
 
-/**
- * Syncs the command menu and starts long polling.
- *
- * In long-polling mode `bot.launch()` only settles once polling has *stopped*, so readiness is
- * signalled through its `onLaunch` callback instead of awaiting the returned promise.
- */
-export async function startApplication(app: Application): Promise<RunningApplication> {
-  await app.bot.telegram.setMyCommands(botCommands);
-
-  let polling: Promise<void> = Promise.resolve();
+/** Owns cleanup from the first startup await through polling termination, including startup failure. */
+export async function startApplication(app: Application, signal?: AbortSignal, onStopped: () => void = () => undefined): Promise<RunningApplication> {
+  const controller = new AbortController();
+  if (signal?.aborted) controller.abort(new OperationCancelledError(undefined, "shutdown"));
+  let state: "starting" | "running" | "stopping" | "stopped" = "starting";
   let shutdownPromise: Promise<void> | undefined;
+  let pollingStarted = false;
+  let ready!: () => void;
+  let notReady!: (error: unknown) => void;
+  const readiness = new Promise<void>((resolve, reject) => { ready = resolve; notReady = reject; });
+  const polling = launchPolling(app.bot, controller.signal, () => {
+    pollingStarted = true;
+    if (state === "starting") { state = "running"; ready(); }
+  });
 
-  const shutdown = (reason: string, exitCode = 0) => {
-    shutdownPromise ??= (async () => {
+  const shutdown = (reason: string, exitCode = 0): Promise<void> => {
+    shutdownPromise ??= Promise.resolve().then(async () => {
+      state = "stopping";
+      controller.abort(new OperationCancelledError(undefined, "shutdown"));
+      notReady(controller.signal.reason);
       logger.info({ reason }, "Shutting down");
-
       const forceExit = setTimeout(() => {
         logger.error("Graceful shutdown timed out, forcing exit");
         process.exit(1);
       }, SHUTDOWN_TIMEOUT_MS);
       forceExit.unref();
-
       try {
-        // Stops fetching new updates; the polling promise settles after updates in flight are done.
-        app.bot.stop(reason);
+        if (pollingStarted) {
+          try { app.bot.stop(reason); }
+          catch (err) { logger.error({ err }, "Error while stopping the bot"); }
+        }
+        // Even if stop() throws, never close storage while launch/polling can still use it.
         const settled = await Promise.allSettled([polling, app.drain()]);
         for (const result of settled) {
-          if (result.status === "rejected") logger.error({ err: result.reason }, "Error draining in-flight work");
+          if (result.status === "rejected" && result.reason !== controller.signal.reason) {
+            logger.error({ err: result.reason }, "Error draining in-flight work");
+          }
         }
-      } catch (err) {
-        logger.error({ err }, "Error while stopping the bot");
+        try { app.close(); }
+        catch (err) { logger.error({ err }, "Error while closing resources"); }
       } finally {
-        await app.drain();
+        state = "stopped";
         clearTimeout(forceExit);
-        try {
-          app.close();
-        } catch (err) {
-          logger.error({ err }, "Error while closing resources");
-        }
-        if (exitCode !== 0) {
-          process.exitCode = exitCode;
-        }
+        signal?.removeEventListener("abort", abort);
+        onStopped();
+        if (exitCode !== 0) process.exitCode = exitCode;
         logger.info("Shutdown complete");
       }
-    })();
-
+    });
     return shutdownPromise;
   };
+  const abort = () => { void shutdown("startup-or-runtime-signal"); };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
 
-  await new Promise<void>((resolve, reject) => {
-    polling = app.bot.launch(() => resolve());
-    polling.then(resolve, reject);
+  void polling.then(() => {
+    if (state === "starting") notReady(new Error("Polling ended before it started"));
+    else if (state === "running") void shutdown("polling-ended", 1);
+  }, (err) => {
+    if (state === "starting") notReady(err);
+    else if (state === "running") {
+      logger.fatal({ err }, "Bot polling crashed");
+      void shutdown("polling-crash", 1);
+    }
   });
 
-  logger.info("Bot is running");
-
-  // Settles when polling stops: normally because of shutdown(), otherwise it crashed (e.g. 409 conflict).
-  polling.catch((err) => {
-    logger.fatal({ err }, "Bot polling crashed");
-    void shutdown("polling-crash", 1);
-  });
-
-  return { shutdown };
+  try {
+    await readiness;
+    controller.signal.throwIfAborted();
+    logger.info("Bot is running");
+    return { shutdown };
+  } catch (error) {
+    await shutdown("startup-stopped");
+    throw error;
+  }
 }
 
-/** Starts the application and shuts it down gracefully on SIGINT/SIGTERM. */
-export async function runApplication(app: Application): Promise<RunningApplication> {
-  const running = await startApplication(app);
-
-  process.once("SIGINT", () => void running.shutdown("SIGINT"));
-  process.once("SIGTERM", () => void running.shutdown("SIGTERM"));
-  return running;
+/** Signals are owned before startup begins and removed after failure or shutdown. */
+export async function runApplication(app: Application, signal?: AbortSignal): Promise<RunningApplication> {
+  const controller = new AbortController();
+  const onInterrupt = () => controller.abort();
+  const onTerminate = () => controller.abort();
+  const remove = () => {
+    process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("SIGTERM", onTerminate);
+  };
+  if (!signal) {
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
+  }
+  try {
+    return await startApplication(app, signal ?? controller.signal, remove);
+  } catch (error) {
+    remove();
+    throw error;
+  }
 }

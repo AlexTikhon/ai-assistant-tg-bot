@@ -14,7 +14,19 @@ function readConfig() {
   return config;
 }
 
-const { exitCode } = await startBot({ readConfig, createApplication, runApplication, log: logger });
+// Cover the diagnostic await too, before runApplication takes ownership of Telegram startup.
+const controller = new AbortController();
+const stop = () => controller.abort();
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+const { exitCode, running } = await startBot({
+  readConfig, createApplication, log: logger, signal: controller.signal,
+  runApplication: (app) => runApplication(app, controller.signal),
+});
+if (!running) {
+  process.removeListener("SIGINT", stop);
+  process.removeListener("SIGTERM", stop);
+}
 if (exitCode !== 0) {
   process.exitCode = exitCode;
 }

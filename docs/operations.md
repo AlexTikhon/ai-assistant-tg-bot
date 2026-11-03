@@ -160,6 +160,8 @@ At most `MAX_ACTIVE_EXPENSIVE_REQUESTS` expensive requests (questions, summaries
 - **A slot is held until the work has really finished.** A request that hit `HANDLER_TIMEOUT_MS` already told its user "took too long", but if a provider call is still running (OpenAI clients may not stop at once) its slot stays occupied until that call returns. Many "busy" replies right after timeouts mean providers are slow, not that the limits are too small.
 - **Tuning.** Raise the overall bound only after checking provider rate limits and memory (a buffered upload is up to `MAX_UPLOAD_BYTES`); keep the per-user bound small. Both are read at startup; the counters are in memory and start empty after a restart.
 
+Signals during startup are handled too: cancellation during the startup diagnostic prevents connection, and cancellation during command sync, `getMe` or `deleteWebhook` prevents late polling. Storage stays open until startup/polling and application work settle. The `ready` stage means polling issued its first request; it does not establish ongoing Telegram availability. A startup signal exits cleanly without logging readiness; an API startup failure exits non-zero after cleanup.
+
 ## Integrity, repair and maintenance
 
 ```bash

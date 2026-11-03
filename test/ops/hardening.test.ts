@@ -79,7 +79,7 @@ describe("logging rule: what may be logged (docs/security.md)", () => {
 
 describe("operational commands", () => {
   it.each(["backup", "backup-verify", "integrity", "reindex", "restore", "diagnostics", "db-maintenance"])("%s limits the JSON application log to warnings so its own report is readable, before the logger is loaded", (name) => {
-    const imports = fs.readFileSync(path.join(SRC, "cli", `${name}.ts`), "utf-8").split("\n").filter((line) => line.startsWith("import "));
+    const imports = fs.readFileSync(path.join(SRC, "cli", `${name}.ts`), "utf-8").split(/\r?\n/).filter((line) => line.startsWith("import "));
 
     expect(imports.slice(0, 2)).toEqual(['import "dotenv/config";', 'import "./quiet-logs.js";']);
   });

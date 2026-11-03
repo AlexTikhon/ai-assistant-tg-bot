@@ -2,6 +2,7 @@ import type { Application } from "./composition-root.js";
 import { ConfigError } from "./config/config.js";
 import type { RunningApplication } from "./lifecycle.js";
 import { StartupError } from "./shared/errors.js";
+import { OperationCancelledError } from "./shared/operation.js";
 
 type Log = {
   info(fields: Record<string, unknown>, message: string): void;
@@ -14,9 +15,10 @@ type Dependencies<Config> = {
   readConfig(): Config;
   /** Opens and migrates the database, checks the data directory and wires everything. Throws a StartupError. */
   createApplication(config: Config): Application;
-  /** Connects to Telegram and starts polling. */
+  /** Connects to Telegram and starts polling; owns cleanup even if startup fails. */
   runApplication(app: Application): Promise<RunningApplication>;
   log: Log;
+  signal?: AbortSignal;
 };
 
 export type StartResult = { exitCode: number; running?: RunningApplication };
@@ -29,6 +31,7 @@ export type StartResult = { exitCode: number; running?: RunningApplication };
  */
 export async function startBot<Config>(deps: Dependencies<Config>): Promise<StartResult> {
   const { log } = deps;
+  if (deps.signal?.aborted) return { exitCode: 0 };
 
   let config: Config;
   try {
@@ -62,14 +65,22 @@ export async function startBot<Config>(deps: Dependencies<Config>): Promise<Star
     // A diagnostic: it must never be the reason the bot does not start.
     await app.startupCheck().catch((err) => log.warn({ stage: "startup-check", err }, "The startup check failed; continuing"));
 
+    if (deps.signal?.aborted) {
+      try { await app.drain(); } finally { app.close(); }
+      return { exitCode: 0 };
+    }
+
     const running = await deps.runApplication(app);
+    if (deps.signal?.aborted) {
+      await running.shutdown("startup-signal");
+      return { exitCode: 0 };
+    }
     log.info({ stage: "telegram" }, "Connected to Telegram; polling");
     log.info({ stage: "ready" }, "Application started");
     return { exitCode: 0, running };
   } catch (err) {
+    if (err instanceof OperationCancelledError && err.kind === "shutdown") return { exitCode: 0 };
     log.fatal({ stage: "telegram", err }, "Could not connect to Telegram; the bot was not started");
-    await app.drain();
-    app.close();
     return { exitCode: 1 };
   }
 }

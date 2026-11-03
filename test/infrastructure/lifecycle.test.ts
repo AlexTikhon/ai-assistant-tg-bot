@@ -8,9 +8,10 @@ function createFakeApplication() {
   const events: string[] = [];
 
   const bot = {
-    telegram: { setMyCommands: vi.fn(async () => true) },
+    telegram: { setMyCommands: vi.fn(async () => true), callApi: vi.fn(async (_method: string, _payload: unknown) => []) },
     launch: vi.fn((onLaunch: () => void) => {
       onLaunch();
+      void bot.telegram.callApi("getUpdates", {});
       return new Promise<void>((resolve) => {
         finishPolling = () => {
           events.push("polling finished");
@@ -63,14 +64,18 @@ describe("application lifecycle", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("still closes resources when stopping the bot throws", async () => {
-    const { app, bot, close } = createFakeApplication();
+  it("still waits for polling before closing resources when stopping the bot throws", async () => {
+    const { app, bot, close, finish } = createFakeApplication();
     bot.stop.mockImplementation(() => {
       throw new Error("Bot is not running!");
     });
     const running = await startApplication(app);
 
-    await running.shutdown("SIGINT");
+    const shutdown = running.shutdown("SIGINT");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(close).not.toHaveBeenCalled();
+    finish();
+    await shutdown;
 
     expect(close).toHaveBeenCalledOnce();
   });
