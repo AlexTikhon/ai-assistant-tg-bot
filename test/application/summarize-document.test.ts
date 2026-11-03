@@ -6,6 +6,7 @@ import {
 import { splitText } from "../../src/core/text-splitter.js";
 import { NotFoundError, ValidationError } from "../../src/shared/errors.js";
 import { createTestStores, FakeChatModel, makeChunk, makeDocument } from "../support/fakes.js";
+import { MAX_GENERATED_TEXT_CHARS, OUTPUT_TRUNCATED_NOTICE } from "../../src/shared/output-budget.js";
 
 let stores: ReturnType<typeof createTestStores>;
 
@@ -23,6 +24,21 @@ beforeEach(() => {
 });
 
 describe("SummarizeDocumentUseCase", () => {
+  it("bounds generated summaries before caching and also bounds pre-existing oversized cache entries", async () => {
+    await seed("user-1", "doc-1", ["Short text."]);
+    const chatModel = new FakeChatModel("s".repeat(200_000));
+    const useCase = new SummarizeDocumentUseCase({ ...stores, chatModel, options: limits });
+    const first = await useCase.execute("user-1", "doc-1");
+    expect(first.summary.length).toBeLessThanOrEqual(MAX_GENERATED_TEXT_CHARS);
+    expect(first.summary).toContain(OUTPUT_TRUNCATED_NOTICE);
+    expect((await stores.documents.findById("user-1", "doc-1"))?.summary).toBe(first.summary);
+    await stores.documents.updateSummary("user-1", "doc-1", "old".repeat(200_000));
+    const cached = await useCase.execute("user-1", "doc-1");
+    expect(cached.summary.length).toBeLessThanOrEqual(MAX_GENERATED_TEXT_CHARS);
+    expect(cached.summary).toContain(OUTPUT_TRUNCATED_NOTICE);
+    expect(chatModel.calls).toHaveLength(1);
+  });
+
   it("summarizes a short document with a single call and caches the result", async () => {
     await seed("user-1", "doc-1", ["Short text.", "Another short bit."]);
     const chatModel = new FakeChatModel("The summary.");

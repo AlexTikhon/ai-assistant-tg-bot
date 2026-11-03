@@ -83,6 +83,7 @@ Copy `.env.example`; each command validates only what it uses.
 | `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` | required by the bot | credentials (environment only) |
 | `DATA_DIR` | `data` (`/data` in Docker) | `app.db` and `files/` |
 | `OPENAI_CHAT_MODEL` / `OPENAI_EMBEDDINGS_MODEL` | `gpt-4.1-mini` / `text-embedding-3-small` | changing the embeddings model: `npm run reindex` |
+| `CHAT_MAX_OUTPUT_TOKENS` | `2048` | 1..8192 tokens per chat/summary call; generated text also has a 16,000-character cap |
 | `RETRIEVAL_CONFIDENCE_MODE` | `shadow` | `off`, `shadow`, `enforce` |
 | `MAX_UPLOAD_BYTES`, `MAX_DOCUMENTS_PER_USER`, `MAX_STORAGE_BYTES_PER_USER`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_PDF_PAGES` | 10 MB, 100, 200 MB, 2000, 1000 | bounds |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_MS` | `10` / `60000` | per user |
@@ -109,6 +110,8 @@ CI (`.github/workflows/ci.yml`) runs lint and the deterministic checks on Node 2
 
 ## Project docs
 
+Development is paused at the [2026-11-03 checkpoint](docs/PAUSE_CHECKPOINT.md), which records verification, remaining limits and the resume procedure.
+
 [docs/architecture.md](docs/architecture.md) (layers, schema, lifecycle, failure semantics) · [docs/rag.md](docs/rag.md) (pipeline, gate, provenance) · [docs/evaluation.md](docs/evaluation.md) · [docs/operations.md](docs/operations.md) (run, Docker, backup/restore, scenarios) · [docs/security.md](docs/security.md) (threat model, logging rule)
 
 ## Known limitations
@@ -119,6 +122,8 @@ CI (`.github/workflows/ci.yml`) runs lint and the deterministic checks on Node 2
 - Single process (SQLite file, long polling); the rate limit and the expensive-request limits are in memory and reset on restart. In a burst above `MAX_ACTIVE_EXPENSIVE_REQUESTS` users are told the bot is busy and must send again - there is no waiting queue.
 - Backups are not encrypted and contain every user's documents; the host is trusted storage ([threat model](docs/security.md)).
 - Logs identify a user by a per-process pseudonym (`u-1a2b3c4d`), not the Telegram id; it changes after a restart.
+- Replies are bounded to 8 messages / 24,000 UTF-16 units, with a visible notice when shortened. A send accepted before cancellation may still arrive; ambiguous sends are not retried or followed by a competing timeout reply.
+- Full-text results are owner-scoped, but shared FTS5 BM25 statistics can change their ranking when another user's corpus grows.
 
 ### Possible next steps (not planned)
 

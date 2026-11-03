@@ -85,12 +85,14 @@ const baseConfig = section(
 const openAiModelsConfig = section(
   z.object({
     OPENAI_CHAT_MODEL: z.string().min(1).default("gpt-4.1-mini"),
+    CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(8192).default(2048),
     OPENAI_EMBEDDINGS_MODEL: z.string().min(1).default("text-embedding-3-small"),
     OPENAI_TRANSCRIBE_MODEL: z.string().min(1).default("whisper-1"),
     REQUEST_TIMEOUT_MS: positiveInt(60_000),
   }),
   (env) => ({
     chatModel: env.OPENAI_CHAT_MODEL,
+    chatMaxOutputTokens: env.CHAT_MAX_OUTPUT_TOKENS,
     embeddingsModel: env.OPENAI_EMBEDDINGS_MODEL,
     transcribeModel: env.OPENAI_TRANSCRIBE_MODEL,
     requestTimeoutMs: env.REQUEST_TIMEOUT_MS,

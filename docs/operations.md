@@ -162,6 +162,14 @@ At most `MAX_ACTIVE_EXPENSIVE_REQUESTS` expensive requests (questions, summaries
 
 Signals during startup are handled too: cancellation during the startup diagnostic prevents connection, and cancellation during command sync, `getMe` or `deleteWebhook` prevents late polling. Storage stays open until startup/polling and application work settle. The `ready` stage means polling issued its first request; it does not establish ongoing Telegram availability. A startup signal exits cleanly without logging readiness; an API startup failure exits non-zero after cleanup.
 
+## Generated output and Telegram delivery
+
+`CHAT_MAX_OUTPUT_TOKENS` defaults to 2048 (allowed 1..8192), sent to the chat provider for each answer and each map/reduce summary call. It is not a total request cost budget: a large document still needs multiple generation calls. Results are defensively limited to 16,000 UTF-16 units before citation validation or summary caching, including when an injected provider ignores its token budget. Legacy cached summaries are bounded on read. Provider token exhaustion and local character truncation append a visible shortening notice; a cut numeric citation is removed.
+
+The delivery helper sends at most 8 messages and 24,000 UTF-16 units in total, each at most 4000 units. It bounds text before splitting, sends sequentially, and puts feedback buttons on the last part actually sent. Oversized replies are visibly shortened. Sending is not retried (including 429 or network failures), because the transport may have delivered a message before reporting failure. An operation deadline is passed into Telegram calls; actual transport promises remain tracked until settled, so ignored cancellation retains the expensive-work slot. Once an answer, callback acknowledgement or edit was attempted, cancellation/failure does not send a competing error reply. The user may therefore receive only part of a multipart response, or no message after an ambiguous delivery. A message Telegram accepted before cancellation cannot be retracted. Before any visible delivery attempt, cancellation makes one best-effort notification with its own 5-second transport timeout.
+
+Telegram API calls inside an operation also have a 10-second transport timeout, so a hanging typing indicator cannot hold its slot indefinitely after the main handler returns. The operation deadline can cancel them sooner.
+
 ## Integrity, repair and maintenance
 
 ```bash
@@ -239,7 +247,7 @@ Migrations only move forward. A database written by a newer version is refused (
 - `npm audit --omit=dev` (runtime dependencies) **fails the build** on any known vulnerability.
 - `npm audit` (everything) is **reported, never blocking**: a transitive advisory in a development tool must not stop a release, but it is visible in every run.
 - `npm audit fix --force` is never run. Dependabot (weekly: npm, GitHub Actions, the base image) opens pull requests; nothing is merged automatically.
-- **Currently:** no known advisory, runtime or development. (`esbuild 0.27.3-0.28.0`, GHSA-g7r4-m6w7-qqqr, low - arbitrary file read through esbuild's development server on Windows, a transitive development dependency this project never exposes - was cleared by updating `tsx`, which pulls in the patched esbuild.) An advisory in a development-only tool that cannot be cleared by a compatible update is documented here rather than hidden.
+- **2026-11-03 checkpoint:** Zod 4.3.6 was updated to 4.6.7 after the runtime audit found [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5). The separate full audit reports 12 findings in the development dependency graph: 11 moderate (the ESLint/typescript-eslint/minimatch chain) and one high (Vite 8.3.2). This project starts development through `tsx watch`, not a Vite development server; these findings are recorded under the existing non-blocking development-audit policy. Review compatible tooling updates on resume; do not apply the audit's proposed major-version downgrades or `--force` automatically. The previous esbuild advisory was cleared by the existing `tsx` update.
 
 ## Worked scenarios
 

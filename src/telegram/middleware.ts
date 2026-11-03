@@ -2,6 +2,7 @@ import type { Context, MiddlewareFn } from "telegraf";
 import { AppError, ExternalServiceError } from "../shared/errors.js";
 import { logger } from "../shared/logger.js";
 import { newRequestId, runWithRequestId } from "../shared/request-context.js";
+import { hasDeliveryAttempt } from "./operation.js";
 
 const log = logger.child({ component: "telegram" });
 
@@ -56,6 +57,7 @@ export const errorBoundary: MiddlewareFn<Context> = async (ctx, next) => {
       log.warn({ ...context, code: error.code }, "Update rejected");
     }
 
+    if (hasDeliveryAttempt(ctx)) return; // an ambiguous delivery must not trigger another send
     const reply = error instanceof AppError ? error.message : GENERIC_ERROR_MESSAGE;
     await ctx.reply(reply).catch((replyError) => log.error({ err: replyError }, "Could not send error reply"));
   }

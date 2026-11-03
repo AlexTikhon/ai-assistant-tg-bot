@@ -10,6 +10,7 @@ import type { ChatMessage, ChatModel } from "../ports/chat-model.js";
 import type { DocumentRepository } from "../ports/document-repository.js";
 import type { VectorStore } from "../ports/vector-store.js";
 import { operationSignal, operationStep, throwIfCancelled } from "../../shared/operation.js";
+import { boundOutput } from "../../shared/output-budget.js";
 
 export type SummarizeDocumentResult = {
   document: DocumentRecord;
@@ -72,7 +73,7 @@ export class SummarizeDocumentUseCase {
     }
 
     if (document.summary) {
-      return { document, summary: document.summary };
+      return { document, summary: boundOutput(document.summary) };
     }
 
     const chunks = await vectorStore.listByDocument(userId, documentId);
@@ -95,9 +96,9 @@ export class SummarizeDocumentUseCase {
   }
 
   /** One generation call, counted for the cost log. */
-  private generate(calls: { generation: number }, messages: ChatMessage[]) {
+  private async generate(calls: { generation: number }, messages: ChatMessage[]) {
     calls.generation += 1;
-    return operationStep(() => this.deps.chatModel.complete(messages, { signal: operationSignal() }));
+    return boundOutput(await operationStep(() => this.deps.chatModel.complete(messages, { signal: operationSignal() })));
   }
 
   private async summarizeChunks(chunks: ChunkText[], calls: { generation: number }) {

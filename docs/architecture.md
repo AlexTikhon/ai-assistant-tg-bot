@@ -273,9 +273,9 @@ A backup is a directory: `app.db`, `files/<stored name>` (every original the sna
 
 `startBot` logs the stages separately and stops at the first failure with a non-zero exit code: **config** (invalid configuration: nothing is created), **database** (open + migrate + structural check; a failed migration or a damaged file never reaches polling and the log carries advice on backup verification and restore), **storage** (the data directory must be readable and writable), **retrieval** (the confidence mode is logged), the cheap **startup check**, then **telegram** (command menu sync + polling start; on failure the database is closed). Nothing logs the configuration, the token or the key. The startup check logs counts only - documents, outdated indexes, missing originals, stale temporary files, orphan files - and points to `npm run integrity` for details; it never reads file contents, repairs or calls a provider, and a failing check never blocks the start.
 
-## External calls
-
 Startup and shutdown have one lifecycle owner (`lifecycle.ts`): starting -> running -> stopping -> stopped. Signals are registered before the first asynchronous diagnostic in the entry point, and before command sync when `runApplication` is used directly. A signal during the diagnostic prevents Telegram startup. During command sync, identity lookup or webhook deletion, the Telegram adapter passes cancellation into the transport and checks it again after the await. Even a transport that ignores cancellation cannot resume into polling after shutdown. Readiness means the first `getUpdates` request has been issued; Telegraf's earlier `onLaunch` callback is not readiness and this is not proof of a successful Telegram response. The launch/polling promise and application drainage both settle before storage is closed. Startup failure uses the same cleanup owner, once; stuck shutdown still forces exit after 15 seconds.
+
+## External calls
 
 | Call | Retry | Why |
 | --- | --- | --- |

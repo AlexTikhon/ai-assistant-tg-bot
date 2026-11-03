@@ -86,7 +86,7 @@ describe("real Telegraf polling lifecycle", () => {
       return new Promise((_resolve, reject) => {
         options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
       });
-    }) as typeof app.bot.telegram.callApi);
+    }));
     const controller = new AbortController();
     const starting = startApplication(app, controller.signal);
     const rejected = expect(starting).rejects.toMatchObject({ kind: "shutdown" });
@@ -103,7 +103,7 @@ describe("real Telegraf polling lifecycle", () => {
     transport.mockImplementation(((method, payload, options) => {
       if (method === stage) return Promise.reject(failure);
       return original(method, payload, options);
-    }) as typeof app.bot.telegram.callApi);
+    }));
     await expect(startApplication(app)).rejects.toBe(failure);
     expect(calls).not.toContain("getUpdates");
     expect(drain).toHaveBeenCalledOnce();

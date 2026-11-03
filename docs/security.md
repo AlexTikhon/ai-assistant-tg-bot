@@ -65,3 +65,7 @@ The optional 👍/👎 (`FEEDBACK_BUTTONS`) stores one small row per rating: the
 ## Reporting
 
 Please report a vulnerability privately to the repository owner rather than in a public issue.
+
+## Delivery and output bounds
+
+Chat output has a provider token budget and an independent 16,000 UTF-16-unit application bound before citation checking or summary caching. Telegram delivery is capped at 8 messages / 24,000 units and forwards operation cancellation to its transport. Physical transport tasks remain tracked until settled. A send accepted by Telegram before cancellation can still arrive; ambiguous deliveries are never automatically retried or followed by a conflicting error response. These limits bound response amplification; they do not provide exactly-once delivery or semantic verification of citations.

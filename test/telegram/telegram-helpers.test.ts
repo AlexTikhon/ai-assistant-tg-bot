@@ -2,12 +2,34 @@ import type { Context } from "telegraf";
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "../../src/shared/errors.js";
 import { getMessageText, parseAskDocArgs, parseCommandArgs, requireUserId } from "../../src/telegram/context.js";
-import { MAX_MESSAGE_LENGTH, replyLongText, splitMessage } from "../../src/telegram/reply.js";
+import { MAX_MESSAGE_LENGTH, MAX_REPLY_CHARS, MAX_REPLY_MESSAGES, replyLongText, splitMessage } from "../../src/telegram/reply.js";
+import { OUTPUT_TRUNCATED_NOTICE } from "../../src/shared/output-budget.js";
 
 describe("splitMessage", () => {
   it("returns short text unchanged and nothing for empty text", () => {
     expect(splitMessage("hello")).toEqual(["hello"]);
     expect(splitMessage("   ")).toEqual([]);
+  });
+
+  it("rejects limits that could prevent progress on a surrogate pair", () => {
+    for (const limit of [0, 1, -1, 1.5, NaN]) expect(() => splitMessage("😀", limit)).toThrow(RangeError);
+  });
+
+  it.each([
+    "x".repeat(200_000),
+    Array.from({ length: 20 }, () => "a".repeat(2001)).join("\n\n"),
+    Array.from({ length: 9 }, () => "a".repeat(2995)).join("\n\n"),
+  ])("bounds delivery and keeps the keyboard on its last actual part", async (text) => {
+    const sent: Array<{ text: string; extra?: unknown }> = [];
+    const ctx = { reply: async (text: string, extra?: unknown) => { sent.push({ text, extra }); } } as unknown as Context;
+    const extra = { reply_markup: { inline_keyboard: [] } };
+    await replyLongText(ctx, text, extra);
+    expect(sent.length).toBeLessThanOrEqual(MAX_REPLY_MESSAGES);
+    expect(sent.reduce((sum, item) => sum + item.text.length, 0)).toBeLessThanOrEqual(MAX_REPLY_CHARS);
+    expect(sent.at(-1)?.text).toContain(OUTPUT_TRUNCATED_NOTICE.trim());
+    expect(sent.at(-1)?.extra).toBe(extra);
+    expect(sent.slice(0, -1).every((item) => item.extra === undefined)).toBe(true);
+    expect(sent.every((item) => item.text.length <= MAX_MESSAGE_LENGTH)).toBe(true);
   });
 
   it("splits large text into parts within the limit without losing content", () => {

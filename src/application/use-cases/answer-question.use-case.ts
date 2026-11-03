@@ -12,6 +12,7 @@ import { buildAnswerMessages } from "../prompts/answer-question.prompt.js";
 import type { ChatModel } from "../ports/chat-model.js";
 import type { DocumentRepository } from "../ports/document-repository.js";
 import { operationSignal, operationStep } from "../../shared/operation.js";
+import { boundOutput } from "../../shared/output-budget.js";
 
 export const MAX_QUESTION_CHARS = 2000;
 
@@ -102,7 +103,7 @@ export class AnswerQuestionUseCase {
     const generationMs = elapsedSince(generationStart);
 
     // Only checks that [n] points at one of the excerpts the model was shown - not that it is right.
-    const grounded = groundCitations(generated, chunks.length);
+    const grounded = groundCitations(boundOutput(generated), chunks.length);
     if (grounded.unknown.length > 0) {
       this.log.warn(
         { userId: input.userId, removedReferences: grounded.unknown, sources: chunks.length },

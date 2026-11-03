@@ -137,7 +137,7 @@ function createOpenAiProviders(config: AppConfig): Providers {
       timeoutMs: config.openai.requestTimeoutMs,
       chunkSize: config.ingestion.chunkSize,
     }),
-    chatModel: createOpenAIChatModel({ apiKey: config.openai.apiKey, model: config.openai.chatModel, timeoutMs: config.openai.requestTimeoutMs }),
+    chatModel: createOpenAIChatModel({ apiKey: config.openai.apiKey, model: config.openai.chatModel, timeoutMs: config.openai.requestTimeoutMs, maxOutputTokens: config.openai.chatMaxOutputTokens }),
     speechToText: new OpenAISpeechToText({ apiKey: config.openai.apiKey, model: config.openai.transcribeModel, timeoutMs: config.openai.requestTimeoutMs }),
   };
 }

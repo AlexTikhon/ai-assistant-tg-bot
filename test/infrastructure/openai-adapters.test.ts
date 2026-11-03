@@ -1,7 +1,7 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { describe, expect, it, vi } from "vitest";
-import { OpenAIChatModel } from "../../src/infrastructure/openai/openai-chat-model.js";
+import { createOpenAIChatModel, OpenAIChatModel } from "../../src/infrastructure/openai/openai-chat-model.js";
 import { createOpenAIEmbeddings, OpenAIEmbeddingsProvider } from "../../src/infrastructure/openai/openai-embeddings.js";
 import { OpenAISpeechToText } from "../../src/infrastructure/openai/openai-speech-to-text.js";
 import { readTextContent } from "../../src/infrastructure/openai/response-text.js";
@@ -74,6 +74,25 @@ describe("OpenAISpeechToText", () => {
 });
 
 describe("OpenAIChatModel", () => {
+  it("discloses provider token exhaustion even for a short output and removes its unfinished reference", async () => {
+    const model = new OpenAIChatModel({ invoke: async () => ({ content: "Answer [1,", response_metadata: { finish_reason: "length" } }) });
+    expect(await model.complete([{ role: "user", content: "question" }])).toBe("Answer\n\n[Response shortened to fit the output limit.]");
+  });
+
+  it("sends the configured token budget through the real LangChain/SDK request", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      id: "test", object: "chat.completion", created: 0, model: "gpt-4.1-mini",
+      choices: [{ index: 0, message: { role: "assistant", content: "bounded answer" }, finish_reason: "length" }],
+      usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+    }));
+    const model = createOpenAIChatModel({ apiKey: "test", model: "gpt-4.1-mini", timeoutMs: 1000, maxOutputTokens: 123, fetchImpl });
+    expect(await model.complete([{ role: "user", content: "question" }])).toBe("bounded answer\n\n[Response shortened to fit the output limit.]");
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [unknown, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.max_tokens ?? body.max_completion_tokens).toBe(123);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("maps application roles to LangChain system/human messages and returns plain text", async () => {
     const invoke = vi.fn(async (_messages: BaseMessage[]) => ({ content: [{ type: "text", text: "Hello " }, { text: "there" }] }));
 

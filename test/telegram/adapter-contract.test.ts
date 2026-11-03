@@ -410,6 +410,20 @@ describe("replacement", () => {
 });
 
 describe("long responses", () => {
+  it("bounds an oversized injected answer while preserving its complete citation and source list", async () => {
+    app.close();
+    start({ chatModel: { complete: async () => "Supported [1]. " + "x".repeat(200_000) } });
+    await upload();
+    calls.length = 0;
+    await send(textUpdate("When does the nightly backup run?"));
+    expect(replies().length).toBeLessThanOrEqual(8);
+    const text = replies().join("\n");
+    expect(text).toContain("Supported [1].");
+    expect(text).toContain("[Response shortened to fit the output limit.]");
+    expect(text).toContain("[1] handbook.md");
+    expect(text.length).toBeLessThan(24_000);
+  });
+
   it("a long answer is delivered in several messages, none above Telegram's limit, in order and without losing text", async () => {
     app.close();
     const sentence = "This is one sentence of a very long answer. ";
